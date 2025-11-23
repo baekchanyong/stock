@@ -8,9 +8,9 @@ import requests
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v25.csv"
+DB_FILE = "stock_analysis_v26.csv"
 
-st.set_page_config(page_title="V25 가치투자 분석기", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="V26 가치투자 분석기", page_icon="📱", layout="wide")
 
 # --- 숫자 변환 함수 ---
 def to_float(val):
@@ -79,7 +79,6 @@ def calculate_fear_greed(df):
     ma20 = df['Close'].rolling(window=20).mean()
     disparity = (df['Close'] / ma20) * 100
     
-    # 이격도 점수화: 90이하=0점, 110이상=100점, 그 사이는 비율
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
     
     try:
@@ -159,7 +158,7 @@ def run_update_process(target_date, target_num, status_text, progress_bar):
                         if not is_backtest: price_now = price_at_target
             except: pass
 
-            # 3. [개선] 적정주가 계산 (ROE 프리미엄 적용)
+            # 3. 적정주가 계산 (ROE 프리미엄)
             base_per = 15.0
             base_pbr = 1.2
             
@@ -210,7 +209,7 @@ def run_update_process(target_date, target_num, status_text, progress_bar):
 
 # --- 메인 화면 ---
 
-st.title("🧬 가치투자 분석기 V25 (정렬 기능 추가)")
+st.title("🧬 가치투자 분석기 V26 (모바일 최적화)")
 
 # 설명 섹션
 with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식 (Click)**", expanded=True):
@@ -220,8 +219,8 @@ with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식 (Cli
         st.latex(r'''적정주가 = (EPS \times M_{per} \times 0.7) + (BPS \times M_{pbr} \times 0.3)''')
         st.markdown("""
         * **기본 멀티플:** PER 15배, PBR 1.2배
-        * **ROE 프리미엄:** ROE가 10%를 초과하면, 초과분만큼 목표 배수를 상향합니다. (고성장주 저평가 문제 해결)
-        * **공포 보정:** 공포지수가 낮을수록 적정주가 추가 할증
+        * **ROE 프리미엄:** ROE가 10%를 초과하면 목표 배수 상향
+        * **공포 보정:** 공포지수가 낮을수록 적정주가 할증
         """)
         
     with c2:
@@ -254,7 +253,6 @@ with tab1:
 with tab2:
     st.header("🏆 투자 추천 순위")
     
-    # [새로운 기능] 정렬 옵션 추가
     sort_option = st.radio(
         "🔀 정렬 기준 선택", 
         ["괴리율 높은 순 (저평가 추천)", "📈 가격 상승액 순 (현재가 > 기준가)", "📉 가격 하락액 순 (현재가 < 기준가)"],
@@ -269,7 +267,6 @@ with tab2:
             for col in ['기준일가격', '현재가격', '적정주가', '괴리율', 'EPS', 'BPS', '공포지수', 'ROE(%)']:
                 if col in df_res.columns: df_res[col] = df_res[col].apply(to_float)
 
-            # [새로운 기능] 차이금액 계산
             df_res['차이금액'] = df_res['현재가격'] - df_res['기준일가격']
 
             df_res = df_res.drop_duplicates(['종목코드'], keep='last')
@@ -287,11 +284,24 @@ with tab2:
                 df_res = df_res.reset_index(drop=True)
                 df_res.index += 1
                 
+                # [모바일 가독성 개선] 순번과 종목명을 인덱스로 설정하여 고정(Freeze)
+                # 인덱스 이름 설정
+                df_res.index.name = "순번"
+                
+                # '순번'과 '종목명'을 인덱스로 보내서 스크롤 시 고정되게 함
+                # Streamlit에서 인덱스는 기본적으로 Sticky(고정) 속성을 가짐
+                df_display = df_res.set_index('종목명', append=True) # 순번, 종목명 2중 인덱스
+                
+                # 원하는 컬럼 순서 (종목명, 기준일, 기준일가격, 현재가격, 차이금액...)
+                # 종목명은 이미 인덱스로 갔으므로 나머지 컬럼 배치
+                cols_order = ['기준일', '기준일가격', '현재가격', '차이금액', '적정주가', '괴리율', '공포지수', 'EPS', 'BPS', 'ROE(%)']
+                
                 top = df_res.iloc[0]
                 st.info(f"🥇 **1위: {top['종목명']}** | 차이금액: {top['차이금액']:+,.0f}원 | 괴리율: {top['괴리율']}%")
                 
+                # 데이터프레임 표시
                 st.dataframe(
-                    df_res[['기준일', '종목명', '기준일가격', '현재가격', '차이금액', '적정주가', '괴리율', '공포지수', 'EPS', 'BPS', 'ROE(%)']].style.applymap(
+                    df_display[cols_order].style.applymap(
                         lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
                         subset=['괴리율']
                     ).applymap(
