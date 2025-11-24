@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v49.csv"
+DB_FILE = "stock_analysis_v51.csv"
 
-st.set_page_config(page_title="V49 가치투자 분석기 (정밀)", page_icon="💎", layout="wide")
+st.set_page_config(page_title="V51 수익중심 가치투자 분석기", page_icon="⚖️", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -34,7 +34,7 @@ def get_bok_base_rate():
         return 3.25 
     except: return 3.25
 
-# --- [복구됨] 개별 종목 정밀 크롤링 (정확도 최우선) ---
+# --- 펀더멘털 정밀 크롤링 ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -45,31 +45,23 @@ def get_fundamentals(code):
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=2)
         
-        # HTML 직접 파싱 (속도와 정확성 균형)
         html = response.text
         dfs = pd.read_html(html, encoding='cp949')
         
         eps, bps = 0.0, 0.0
         for df in dfs:
-            # EPS, BPS 키워드가 있는 표 찾기
             if 'EPS' in df.to_string() or 'BPS' in df.to_string():
-                # 멀티인덱스 컬럼 단순화
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = [c[0] for c in df.columns]
-                
                 for idx, row in df.iterrows():
                     row_str = str(row.iloc[0])
-                    
-                    # EPS (최근 결산)
                     if 'EPS' in row_str or '주당순이익' in row_str:
                         vals = row.iloc[1:].tolist()
-                        for v in reversed(vals): # 최신순
+                        for v in reversed(vals):
                             val = to_float(v)
                             if val > 0: 
                                 eps = val
                                 break
-                    
-                    # BPS (최근 결산)
                     if 'BPS' in row_str or '주당순자산' in row_str:
                         vals = row.iloc[1:].tolist()
                         for v in reversed(vals):
@@ -77,7 +69,6 @@ def get_fundamentals(code):
                             if val > 0: 
                                 bps = val
                                 break
-                
                 if eps > 0 and bps > 0: break
         return eps, bps
     except: return 0, 0
@@ -108,7 +99,7 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 분석 실행 (정밀 모드) ---
+# --- 분석 실행 ---
 def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
     chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
@@ -125,23 +116,18 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} : 재무제표 정밀 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 정밀 분석 중...")
         
         try:
             current_price = to_float(row.get('Close', 0))
             
-            # [복구] 개별 종목 페이지 직접 접속 (정확도 100%)
             eps, bps = get_fundamentals(code)
-            
-            # 크롤링 실패 시에만 리스트 데이터 참고 (안전장치)
             if eps == 0: eps = to_float(row.get('EPS', 0))
             if bps == 0: bps = to_float(row.get('BPS', 0))
             
-            # ROE 계산
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            # 공포지수
             time.sleep(0.05)
             fg_score = 50
             try:
@@ -150,12 +136,23 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # S-RIM 계산 (기준금리 적용)
-            safe_rate = applied_rate if applied_rate > 0 else 3.5
+            # [핵심 변경] 수익가치(7) : 자산가치(3) 가중치 적용
             
-            target_pbr = max(0.3, roe / safe_rate)
+            # 1. 수익가치 (Earnings Value): EPS / 금리
+            earnings_value = 0
+            if applied_rate > 0:
+                earnings_value = eps / (applied_rate / 100)
+            
+            # 2. 자산가치 (Asset Value): BPS
+            asset_value = bps
+            
+            # 3. 가중 평균 적정주가 (7:3)
+            base_fair_price = (earnings_value * 0.7) + (asset_value * 0.3)
+            
+            # 4. 심리 보정
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-            fair_price = bps * target_pbr * sentiment_factor
+            
+            fair_price = base_fair_price * sentiment_factor
             
             gap = 0
             if current_price > 0:
@@ -185,11 +182,20 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("💎 V49 가치투자 분석기 (정밀 복구판)")
+st.title("⚖️ V51 수익중심 가치투자 분석기 (7:3)")
 
-with st.expander("📘 **적정주가 산출 공식**", expanded=True):
-    st.info("💡 **개별 종목 정밀 조회** 방식으로 복구하여 데이터 정확도를 확보했습니다.")
-    st.markdown(r"$$ \text{적정가} = \text{BPS} \times \frac{\text{ROE}}{\text{기준금리}} \times \text{심리보정} $$")
+with st.expander("📘 **[NEW] 적정주가 산출 원리 (수익 7 : 자산 3)**", expanded=True):
+    st.info("💡 **수익(돈 버는 능력)**에 70%의 가중치를 두어, 실적 좋은 기업을 우대합니다.")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 1. 가치 평가 기준")
+        st.latex(r"\text{수익가치} = \frac{\text{EPS}}{\text{금리}} \quad (70\%)")
+        st.latex(r"\text{자산가치} = \text{BPS} \quad (30\%)")
+    
+    with c2:
+        st.markdown("##### 2. 최종 공식")
+        st.latex(r"\text{적정가} = (\text{수익가치} \times 0.7 + \text{자산가치} \times 0.3) \times \text{심리보정}")
 
 st.divider()
 
@@ -258,7 +264,7 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     
     status_box.success(f"✅ 분석 완료! (기준금리: {applied_rate}%)")
 
-# --- 3. 결과 (UI 최적화) ---
+# --- 3. 결과 ---
 st.divider()
 st.header("🏆 분석 결과")
 
@@ -273,7 +279,7 @@ if os.path.exists(DB_FILE):
             if c in df.columns: df[c] = df[c].apply(to_float)
             
         df = df.drop_duplicates(['종목코드'], keep='last')
-        df = df[df['적정가'] > 0] # 오류 데이터(0원) 제거
+        df = df[df['적정가'] > 0]
         
         if not df.empty:
             # 정렬
@@ -284,15 +290,13 @@ if os.path.exists(DB_FILE):
             df = df.reset_index(drop=True)
             df.index += 1
             
-            # [UI 핵심] 고정을 위해 '순위', '종목명'을 인덱스로 설정
+            # UI 고정 및 컬럼 순서
             df.index.name = "순위"
-            df_display = df.set_index('종목명', append=True) # 순위, 종목명이 왼쪽 고정됨
-            
-            # [UI 핵심] 컬럼 순서 지정
+            df_display = df.set_index('종목명', append=True)
             cols = ['현재가', '적정가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
             
             top = df.iloc[0]
-            st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | 적정가: {top['적정가']:,.0f}원")
+            st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | ROE: {top['ROE(%)']}%")
 
             st.dataframe(
                 df_display[cols].style.applymap(
