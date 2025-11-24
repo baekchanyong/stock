@@ -5,68 +5,42 @@ import numpy as np
 import os
 import time
 import requests
-import re # [추가] 문자열 검색용 정규식 모듈
+import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v43.csv"
+DB_FILE = "stock_analysis_v45.csv"
 
-st.set_page_config(page_title="V43 가치투자 분석기", page_icon="📡", layout="wide")
+st.set_page_config(page_title="V45 실시간 금리 기준 분석기", page_icon="⚖️", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
     try:
         if pd.isna(val) or val == '' or str(val).strip() == '-': return 0.0
-        # 쉼표 제거, 퍼센트 제거
-        clean_val = str(val).replace(',', '').replace('%', '')
-        return float(clean_val)
+        return float(str(val).replace(',', '').replace('%', ''))
     except: return 0.0
 
-# --- [핵심 수정] 금리 수집 함수 (정규식 사용) ---
-def get_current_bond_yield():
+# --- [핵심] 실시간 금리 크롤링 (정규식 활용) ---
+def get_realtime_rate():
     """
-    표 구조에 의존하지 않고, HTML 소스에서 'BBB-' 근처의 숫자를 강제로 추출합니다.
+    네이버 금융에서 'BBB- 회사채 금리'를 가져옵니다.
+    이것을 주식 시장의 '최소 기대수익률(Base Rate)'로 사용합니다.
     """
     url = "https://finance.naver.com/marketindex/interestList.naver"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        response = requests.get(url, headers=headers, timeout=5)
-        response.encoding = 'cp949' # 한글 깨짐 방지
-        html = response.text
-        
-        # 1단계: 'BBB-'라는 글자가 포함된 부분 찾기
-        # 네이버 금융 페이지 소스 내에서 "회사채(BBB-)" 이런 텍스트 뒤에 나오는 숫자를 찾음
-        # 패턴: 회사채.*?BBB-.*?<td class="num">([0-9.]+)</td>
-        
-        # 정규식 패턴: "BBB-"가 나오고, 그 뒤에 오는 첫 번째 숫자(실수)를 찾음
-        # 예: 회사채(BBB-) ... 8.50
-        match = re.search(r'BBB-.*?>\s*([0-9]+\.[0-9]+)', html)
-        
+        response = requests.get(url, headers=headers, timeout=3)
+        # HTML 내에서 'BBB-' 텍스트 뒤에 나오는 금리 숫자 추출
+        # 예: <td class="num">8.50</td>
+        match = re.search(r'BBB-.*?>\s*([0-9]+\.[0-9]+)', response.text)
         if match:
-            yield_val = float(match.group(1))
-            return yield_val
-            
-        # 2단계: 만약 위 패턴 실패 시, 테이블 전체에서 'BBB-' 행의 숫자를 찾음
-        # pandas read_html 재시도 (보조 수단)
-        dfs = pd.read_html(response.text)
-        for df in dfs:
-            if 'BBB' in df.to_string():
-                for idx, row in df.iterrows():
-                    line = " ".join(row.astype(str))
-                    if 'BBB-' in line:
-                        # 행 안에 있는 숫자 중 금리처럼 보이는 것(0~20 사이) 추출
-                        for item in row:
-                            val = to_float(item)
-                            if 1.0 < val < 20.0: # 금리 범위를 1~20%로 가정
-                                return val
-                                
+            return float(match.group(1))
         return None
-    except Exception as e:
-        # st.error(f"금리 접속 에러: {e}") # 디버깅용
+    except:
         return None
 
-# --- 펀더멘털 크롤링 ---
+# --- 펀더멘털 (EPS, BPS) ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -75,36 +49,27 @@ def get_fundamentals(code):
         
         url = f"https://finance.naver.com/item/main.naver?code={target_code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=3)
+        response = requests.get(url, headers=headers, timeout=2)
         
-        # 정규식으로 빠르게 EPS, BPS 찾기 (속도 향상 및 오류 방지)
-        html = response.text
+        dfs = pd.read_html(response.text, encoding='cp949')
         
-        eps = 0.0
-        bps = 0.0
-        
-        # 1. 최근 연간 실적 테이블 찾기 (단순화)
-        # HTML 내에서 "최근 연간 실적" 근처의 데이터를 찾는 것은 복잡하므로
-        # 기존 pandas 방식 유지하되 예외처리 강화
-        dfs = pd.read_html(html, encoding='cp949')
-        
+        eps, bps = 0.0, 0.0
         for df in dfs:
-            df_str = df.to_string()
-            if 'EPS' in df_str or 'BPS' in df_str:
+            if 'EPS' in df.to_string() or 'BPS' in df.to_string():
                 if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[0] if c[0] == c[1] else f"{c[0]}_{c[1]}" for c in df.columns]
+                    df.columns = [c[0] for c in df.columns]
                 for idx, row in df.iterrows():
                     row_str = str(row.iloc[0])
                     if 'EPS' in row_str or '주당순이익' in row_str:
-                        values = row.iloc[1:].tolist()
-                        for v in reversed(values):
+                        vals = row.iloc[1:].tolist()
+                        for v in reversed(vals):
                             val = to_float(v)
                             if val > 0: 
                                 eps = val
                                 break
                     if 'BPS' in row_str or '주당순자산' in row_str:
-                        values = row.iloc[1:].tolist()
-                        for v in reversed(values):
+                        vals = row.iloc[1:].tolist()
+                        for v in reversed(vals):
                             val = to_float(v)
                             if val > 0: 
                                 bps = val
@@ -137,8 +102,8 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 분석 실행 함수 ---
-def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
+# --- 분석 실행 ---
+def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
     chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     
@@ -154,7 +119,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} 정밀 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 분석 중...")
         
         try:
             current_price = to_float(row.get('Close', 0))
@@ -176,12 +141,19 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # 3. S-RIM 계산
-            # 금리 0이면 방어
-            safe_rate = applied_rate if applied_rate > 0 else 8.0
+            # 3. 적정주가 계산 (기준금리 1배수 적용)
+            # 공식: 적정 PBR = ROE / 기준금리
+            # 의미: 내 돈(자본)으로 은행이자(금리)보다 몇 배 더 버느냐? 만큼 쳐준다.
             
-            target_pbr = max(0.3, roe / safe_rate)
+            # 요구수익률 (k) = 기준금리 그대로 사용
+            k = base_rate / 100
+            
+            # 최소 PBR 0.3배 방어 (너무 낮게 나오는 것 방지)
+            target_pbr = max(0.3, roe / base_rate)
+            
+            # 심리 보정
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
+            
             fair_price = bps * target_pbr * sentiment_factor
             
             gap = 0
@@ -212,12 +184,18 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("📡 V43 가치투자 분석기 (금리수집 최종병기)")
+st.title("⚖️ V45 실시간 금리 기준 가치투자 분석기")
 
-with st.expander("📘 **적정주가 산출 방식 및 금리 안내 (Click)**", expanded=True):
-    st.info("💡 **분석 시작**을 누르면 **네이버 금융의 소스코드**를 직접 분석해 실시간 금리를 가져옵니다.")
-    # 수식 안전하게 표시
-    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{실시간금리}} \times \text{심리보정}"
+# 금리 상태 관리
+if 'base_rate' not in st.session_state:
+    st.session_state.base_rate = 8.0 # 초기값
+
+# 금리 설명
+with st.expander("📘 **[필독] 적정주가 산출 원리 (Click)**", expanded=True):
+    # 수식 오류 방지 위해 분리
+    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{기준금리}(1\text{배})} \times \text{심리보정}"
+    
+    st.info("💡 모든 종목에 **실시간 시장 금리(BBB-)**를 똑같이 1배수로 적용하여, 가장 객관적인 가치를 산출합니다.")
     st.latex(latex_formula)
 
 st.divider()
@@ -225,143 +203,110 @@ st.divider()
 # --- 1. 설정 영역 ---
 st.header("1. 분석 대상 설정")
 
-# 분석 모드 선택
-mode = st.radio("분석 모드 선택", ["🏆 시가총액 상위 종목 분석", "🔍 특정 종목 검색/추천 분석"], horizontal=True)
-
+mode = st.radio("분석 모드", ["🏆 시가총액 상위", "🔍 종목 검색"], horizontal=True)
 target_stocks = pd.DataFrame()
 
-# 모드 1: 시가총액 상위
-if mode == "🏆 시가총액 상위 종목 분석":
-    st.write("📊 **분석할 상위 종목 수 설정**")
+if mode == "🏆 시가총액 상위":
+    if 'stock_count' not in st.session_state: st.session_state.stock_count = 200
     
-    if 'stock_count' not in st.session_state:
-        st.session_state.stock_count = 200
-
-    def update_slider():
-        st.session_state.stock_count = st.session_state.slider_widget
-    
-    def apply_manual_input():
-        st.session_state.stock_count = st.session_state.num_input
+    def update_slider(): st.session_state.stock_count = st.session_state.slider_widget
+    def apply_manual(): st.session_state.stock_count = st.session_state.num_input
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.slider("슬라이더", 10, 500, key='slider_widget', value=st.session_state.stock_count, on_change=update_slider)
+        st.slider("종목 수", 10, 500, key='slider_widget', value=st.session_state.stock_count, on_change=update_slider)
     with c2:
-        st.number_input("직접 입력", 10, 500, key='num_input', value=st.session_state.stock_count, on_change=apply_manual_input)
+        st.number_input("직접 입력", 10, 500, key='num_input', value=st.session_state.stock_count, on_change=apply_manual)
         
-    if st.button("✅ 위 수치 적용"):
-        apply_manual_input()
-        st.session_state.slider_widget = st.session_state.stock_count 
-        st.success(f"상위 {st.session_state.stock_count}개 종목으로 설정되었습니다.")
+    if st.button("✅ 수치 적용"):
+        apply_manual()
+        st.session_state.slider_widget = st.session_state.stock_count
+        st.rerun()
 
-# 모드 2: 검색
-elif mode == "🔍 특정 종목 검색/추천 분석":
-    search_query = st.text_input("분석하고 싶은 종목명을 입력하세요 (예: 삼성, 현대)", placeholder="종목명 입력 후 Enter")
-    
-    if search_query:
-        with st.spinner("종목 리스트 검색 중..."):
-            try:
-                df_krx = fdr.StockListing('KRX')
-                search_results = df_krx[df_krx['Name'].str.contains(search_query, case=False)]
-                
-                if search_results.empty:
-                    st.error(f"❌ '{search_query}'에 대한 검색 결과가 없습니다.")
-                else:
-                    st.success(f"🔎 총 {len(search_results)}개의 종목을 찾았습니다.")
-                    selected_stocks = st.multiselect(
-                        "분석할 종목을 선택해주세요",
-                        search_results['Name'].tolist(),
-                        default=search_results['Name'].tolist()[:5]
-                    )
-                    target_stocks = search_results[search_results['Name'].isin(selected_stocks)]
-                    if not target_stocks.empty:
-                        st.write("👇 선택된 종목 리스트")
-                        st.dataframe(target_stocks[['Code', 'Name', 'Market', 'Close']])
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
+elif mode == "🔍 종목 검색":
+    query = st.text_input("종목명 검색", placeholder="예: 삼성")
+    if query:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            res = df_krx[df_krx['Name'].str.contains(query, case=False)]
+            if res.empty: st.error("검색 결과 없음")
+            else:
+                picks = st.multiselect("선택", res['Name'].tolist(), default=res['Name'].tolist()[:5])
+                target_stocks = res[res['Name'].isin(picks)]
+        except: st.error("오류")
 
-# --- 2. 실행 및 결과 ---
+# --- 2. 실행 ---
 st.divider()
 st.header("2. 분석 실행")
 
-if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_container_width=True):
+if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     
-    if mode == "🏆 시가총액 상위 종목 분석":
-        with st.spinner("상위 종목 리스트 가져오는 중..."):
+    # 대상 확인
+    if mode == "🏆 시가총액 상위":
+        with st.spinner("리스트 로딩 중..."):
             df_krx = fdr.StockListing('KRX')
             df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
-            df_krx = df_krx.sort_values(by='Marcap', ascending=False)
-            final_target = df_krx.head(st.session_state.stock_count)
+            final_target = df_krx.sort_values(by='Marcap', ascending=False).head(st.session_state.stock_count)
     else:
         if target_stocks.empty:
-            st.warning("⚠️ 분석할 종목이 없습니다. 종목을 선택해주세요.")
+            st.warning("종목을 선택해주세요.")
             st.stop()
         final_target = target_stocks
 
-    # [금리 크롤링]
+    # [핵심] 금리 조회 및 적용
     status_box = st.empty()
-    status_box.info("📡 네이버 금융에서 실시간 금리(BBB- 회사채) 정밀 조회 중...")
+    status_box.info("📡 실시간 금리(BBB-) 조회 중...")
     
-    real_rate = get_current_bond_yield()
-    applied_rate = 8.0
+    fetched_rate = get_realtime_rate()
     
-    if real_rate:
-        applied_rate = real_rate
-        status_box.success(f"✅ 조회 성공! 현재 시장 금리 **{applied_rate}%**를 적용합니다.")
+    if fetched_rate:
+        applied_rate = fetched_rate
+        status_box.success(f"✅ 금리 조회 성공! **{applied_rate}%**를 기준금리로 적용합니다.")
     else:
-        # 실패 시 에러 메시지 + 토스트
-        status_box.error(f"❌ 실시간 금리 조회 최종 실패! (네이버 차단 등). 부득이하게 **기본값 {applied_rate}%**를 적용합니다.")
-        st.toast("⚠️ 금리 조회 실패 -> 기본값 8.0% 적용됨", icon="🚨")
+        applied_rate = 8.5 # 실패 시 기본값
+        status_box.error(f"❌ 금리 조회 실패. 기본값 **{applied_rate}%**를 적용합니다.")
     
     time.sleep(1.5)
     
     p_bar = st.progress(0)
     run_analysis_core(final_target, applied_rate, status_box, p_bar)
     
-    if real_rate:
-        status_box.success(f"✅ 분석 완료! (적용된 실시간 금리: {applied_rate}%)")
-    else:
-        status_box.warning(f"⚠️ 분석 완료! (적용된 기본 금리: {applied_rate}%)")
+    status_box.success(f"✅ 분석 완료! (기준금리: {applied_rate}%)")
 
+# --- 3. 결과 ---
 st.divider()
-
-# 결과 표
 st.header("🏆 분석 결과")
 
-sort_option = st.radio("정렬 기준", ["괴리율 높은 순", "ROE 높은 순", "공포지수 낮은 순"], horizontal=True)
+sort_opt = st.radio("정렬 기준", ["괴리율 순", "ROE 순", "공포지수 순"], horizontal=True)
 
 if st.button("🔄 결과 새로고침"): st.rerun()
 
 if os.path.exists(DB_FILE):
     try:
-        df_res = pd.read_csv(DB_FILE)
-        for col in ['현재가', '적정주가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']:
-            if col in df_res.columns: df_res[col] = df_res[col].apply(to_float)
-
-        df_res = df_res.drop_duplicates(['종목코드'], keep='last')
-        
-        if not df_res.empty:
-            if "괴리율" in sort_option:
-                df_res = df_res.sort_values(by='괴리율', ascending=False)
-            elif "ROE" in sort_option:
-                df_res = df_res.sort_values(by='ROE(%)', ascending=False)
-            elif "공포지수" in sort_option:
-                df_res = df_res.sort_values(by='공포지수', ascending=True)
-
-            df_res = df_res.reset_index(drop=True)
-            df_res.index += 1
+        df = pd.read_csv(DB_FILE)
+        for c in ['현재가', '적정주가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']:
+            if c in df.columns: df[c] = df[c].apply(to_float)
             
-            top = df_res.iloc[0]
+        df = df.drop_duplicates(['종목코드'], keep='last')
+        
+        if not df.empty:
+            if "괴리율" in sort_opt: df = df.sort_values(by='괴리율', ascending=False)
+            elif "ROE" in sort_opt: df = df.sort_values(by='ROE(%)', ascending=False)
+            else: df = df.sort_values(by='공포지수', ascending=True)
+            
+            df = df.reset_index(drop=True)
+            df.index += 1
+            
+            top = df.iloc[0]
             st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | 적정가: {top['적정주가']:,.0f}원")
-
+            
             st.dataframe(
-                df_res[['종목명', '현재가', '적정주가', '괴리율', 'ROE(%)', 'EPS', 'BPS', '공포지수']].style.applymap(
+                df[['종목명', '현재가', '적정주가', '괴리율', 'ROE(%)', 'EPS', 'BPS', '공포지수']].style.applymap(
                     lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
                     subset=['괴리율']
                 ).format("{:,.0f}", subset=['현재가', '적정주가', 'EPS', 'BPS']),
-                height=600,
-                use_container_width=True
+                use_container_width=True, height=600
             )
-        else: st.warning("결과 데이터가 없습니다.")
-    except Exception as e: st.error(f"결과 로드 중 오류: {e}")
+        else: st.warning("결과 없음")
+    except: st.error("파일 읽기 오류")
 else: st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
