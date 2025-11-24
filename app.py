@@ -7,9 +7,9 @@ import time
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v29.csv"
+DB_FILE = "stock_analysis_v30.csv"
 
-st.set_page_config(page_title="V29 심플 가치투자 분석기", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="V30 심플 가치투자 분석기", page_icon="⚡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -49,7 +49,7 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 핵심 분석 엔진 (심플 버전) ---
+# --- 핵심 분석 엔진 ---
 def run_simple_analysis(target_date, target_num, status_text, progress_bar):
     
     # 1. 5년(20분기) 날짜 생성
@@ -62,32 +62,29 @@ def run_simple_analysis(target_date, target_num, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
     is_backtest = (target_str != today_str)
 
-    status_text.info(f"⚡ 과거 5년(20분기)의 [주가]와 [심리]를 분석하여 적정가를 도출합니다...")
+    status_text.info(f"⚡ 과거 5년(20분기)의 주가와 심리를 분석합니다...")
 
     # 2. 데이터 스냅샷 로딩
     df_krx_snapshots = {}
     try:
-        # 종목 선정용 메인 리스트
         df_main = fdr.StockListing('KRX', target_str)
         df_main = df_main[df_main['Market'].isin(['KOSPI'])]
         df_main = df_main.sort_values(by='Marcap', ascending=False)
         target_stocks = df_main.head(target_num)
         
-        # 20개 시점 주가 데이터 로딩
         for i, d in enumerate(dates):
-            # UI 갱신 최소화 (속도 향상)
-            if i % 5 == 0: status_text.text(f"📥 과거 주가 데이터 복원 중... ({d})")
+            if i % 5 == 0: status_text.text(f"📥 데이터 복원 중... ({d})")
             try:
                 snapshot = fdr.StockListing('KRX', d)
                 if not snapshot.empty:
-                    df_krx_snapshots[d] = snapshot.set_index('Code')['Close'] # 주가만 가져옴
+                    df_krx_snapshots[d] = snapshot.set_index('Code')['Close']
             except: pass
             
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return
 
-    # 현재가 로딩 (검증용)
+    # 현재가 로딩
     current_prices_map = {}
     if is_backtest:
         try:
@@ -100,64 +97,49 @@ def run_simple_analysis(target_date, target_num, status_text, progress_bar):
     total = len(target_stocks)
     new_data = []
     
-    # 차트 데이터 시작일 (6년 전)
     chart_start_date = (datetime.strptime(dates[-1], '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d')
 
-    # --- 종목별 분석 ---
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
         
-        # 제외 종목
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
         status_text.text(f"⏳ [{step+1}/{total}] {name} 분석 중...")
         
         try:
-            # 차트 데이터 (한 번에 로딩)
             time.sleep(0.01)
             df_chart_full = fdr.DataReader(code, chart_start_date, target_str)
             
             historical_fair_prices = []
             
-            # 20분기 루프
             for d in dates:
-                # 해당 시점 주가가 없으면 패스
                 if d not in df_krx_snapshots or code not in df_krx_snapshots[d].index:
                     continue
                 
                 price_then = to_float(df_krx_snapshots[d][code])
                 if price_then <= 0: continue
                 
-                # 공포지수 산출
                 fg_score = 50
                 if not df_chart_full.empty:
                     chart_slice = df_chart_full.loc[:d].tail(60)
                     fg_score = calculate_fear_greed_from_slice(chart_slice)
 
-                # [NEW] 심플 적정주가 공식
-                # 적정가 = 당시주가 * 심리보정계수
-                # 공포(0점) -> 주가 * 1.1 (당시 주가가 너무 쌌으니 10% 높게 쳐줌)
-                # 탐욕(100점) -> 주가 * 0.9 (당시 주가가 너무 비쌌으니 10% 깎음)
+                # 심플 적정주가 공식 (주가 * 심리보정)
                 correction_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-                
                 fair_price_at_moment = price_then * correction_factor
                 historical_fair_prices.append(fair_price_at_moment)
 
-            # 최종 5년 평균 적정가
             if not historical_fair_prices: continue
             avg_fair_price = sum(historical_fair_prices) / len(historical_fair_prices)
             
-            # 기준일 주가
             price_base = to_float(row.get('Close', 0))
             
-            # 현재 주가 (수익률 확인용)
             price_now = price_base
             if is_backtest and code in current_prices_map:
                 price_now = to_float(current_prices_map[code])
             
-            # 괴리율
             gap = 0
             if price_base > 0:
                 gap = (avg_fair_price - price_base) / price_base * 100
@@ -184,39 +166,40 @@ def run_simple_analysis(target_date, target_num, status_text, progress_bar):
     progress_bar.empty()
     return True
 
-# --- 메인 화면 ---
+# --- 메인 화면 구성 ---
 
-st.title("⚡ V29 심플 가치투자 분석기")
+st.title("⚡ V30 심플 가치투자 분석기")
 
 # 설명 섹션
-with st.expander("📘 **[NEW] 심플 적정주가 산출 원리 (Price-Sentiment Model)**", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("##### 🧮 산출 공식")
-        st.info("복잡한 재무제표(EPS/PER) 없이, **과거 주가와 시장 심리**만으로 적정가를 찾습니다.")
-        st.latex(r'''\text{시점 } t \text{ 적정가} = \text{주가}_t \times \left( 1 + \frac{50 - \text{공포지수}_t}{50} \times 0.1 \right)''')
-        st.latex(r'''\text{최종 적정주가} = \text{과거 20분기(5년) 적정가의 평균}''')
-        
-    with c2:
-        st.markdown("##### 💡 원리")
-        st.write("1. **공포 구간(지수 < 50):** 당시 주가가 저평가되었다고 보고, 적정가를 주가보다 **높게** 계산합니다.")
-        st.write("2. **탐욕 구간(지수 > 50):** 당시 주가가 거품이라고 보고, 적정가를 주가보다 **낮게** 계산합니다.")
-        st.write("3. 이것을 **5년 동안 평균** 내면, 거품과 공포가 제거된 **'진짜 가격 추세'**가 나옵니다.")
+with st.expander("📘 **[NEW] 심플 적정주가 산출 원리 (Click)**", expanded=False):
+    st.info("""
+    **복잡한 재무제표 없이, '가격'과 '심리'의 역사적 평균으로 가치를 찾습니다.**
+    
+    1. **개별 시점 적정가:** $\\text{당시주가} \\times \\left( 1 + \\frac{50 - \\text{공포지수}}{50} \\times 0.1 \\right)$
+       *(공포스러우면 주가보다 높게, 탐욕스러우면 주가보다 낮게 평가)*
+    2. **최종 적정주가:** 위 계산을 **과거 5년(20분기)** 동안 반복하여 평균을 냅니다.
+    """)
 
 st.divider()
 
-# UI 구성
-with st.sidebar:
-    st.header("1. 분석 조건 설정")
+# [수정됨] 설정 및 실행 버튼을 메인 화면으로 이동 (사이드바 X)
+st.header("1. 분석 조건 설정")
+
+col1, col2 = st.columns(2)
+with col1:
     target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
+with col2:
     target_count = st.slider("분석 종목 수", 10, 300, 50)
-    
-    if st.button("▶️ 분석 시작 (Start)", type="primary"):
-        status_box = st.empty()
-        p_bar = st.progress(0)
-        is_done = run_simple_analysis(target_date, target_count, status_box, p_bar)
-        if is_done:
-            status_box.success(f"✅ 분석 완료! 속도가 훨씬 빨라졌습니다.")
+
+# [중요] 버튼을 메인 화면에 크게 배치
+if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_container_width=True):
+    status_box = st.empty()
+    p_bar = st.progress(0)
+    is_done = run_simple_analysis(target_date, target_count, status_box, p_bar)
+    if is_done:
+        status_box.success(f"✅ 분석 완료! 아래 순위를 확인하세요.")
+
+st.divider()
 
 # 결과 화면
 st.header("🏆 5년 평균 가치투자 순위")
@@ -268,6 +251,6 @@ if os.path.exists(DB_FILE):
                 height=800,
                 use_container_width=True
             )
-        else: st.warning("데이터가 없습니다.")
+        else: st.warning("데이터가 없습니다. 위쪽의 [▶️ 분석 시작] 버튼을 눌러주세요.")
     except Exception as e: st.error(f"오류: {e}")
-else: st.info("👈 [분석 시작] 버튼을 눌러주세요.")
+else: st.info("👈 위쪽의 **[▶️ 분석 시작]** 버튼을 눌러주세요.")
