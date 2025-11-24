@@ -7,9 +7,9 @@ import time
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v34.csv"
+DB_FILE = "stock_analysis_v35.csv"
 
-st.set_page_config(page_title="V34 가치투자 분석기", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="V35 가치투자 분석기", page_icon="🎯", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -21,17 +21,14 @@ def to_float(val):
 # --- 공포탐욕지수 ---
 def calculate_fear_greed_from_slice(df_slice):
     if len(df_slice) < 10: return 50
-    
     delta = df_slice['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    
     ma20 = df_slice['Close'].rolling(window=20).mean()
     disparity = (df_slice['Close'] / ma20) * 100
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
-    
     try:
         val = (rsi.iloc[-1] * 0.5) + (disparity_score.iloc[-1] * 0.5)
         return 50 if pd.isna(val) else val
@@ -45,12 +42,9 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 분석 엔진 (기간 가변형) ---
+# --- 분석 엔진 ---
 def run_custom_analysis(target_date, period_years, target_num, status_text, progress_bar):
-    
-    # 분석할 분기 개수 (1년=4분기)
     quarter_count = period_years * 4
-    
     dates = []
     for i in range(quarter_count): 
         d = target_date - timedelta(days=91 * i)
@@ -62,7 +56,6 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
     status_text.info(f"📅 기준일 [{target_str}]로부터 과거 {period_years}년({quarter_count}분기) 데이터를 분석합니다...")
 
-    # 종목 리스트
     try:
         df_main = fdr.StockListing('KRX', target_str)
         df_main = df_main[df_main['Market'].isin(['KOSPI'])]
@@ -72,7 +65,6 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
         st.error(f"데이터 로드 실패: {e}")
         return
 
-    # 현재가 로딩
     current_prices_map = {}
     if is_backtest:
         try:
@@ -84,12 +76,9 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
     total = len(target_stocks)
     new_data = []
-    
-    # 차트 데이터 시작일 (설정 기간 + 1년 여유)
     chart_lookback_days = (period_years * 365) + 365
     chart_start_date = (datetime.strptime(dates[-1], '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d')
 
-    # --- 종목 분석 루프 ---
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
@@ -102,12 +91,9 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
         try:
             time.sleep(0.01)
             df_chart_full = fdr.DataReader(code, chart_start_date, target_str)
-            
             if df_chart_full.empty: continue
 
             historical_fair_prices = []
-            
-            # 설정된 분기만큼 반복
             for d in dates:
                 end_dt = datetime.strptime(d, "%Y-%m-%d")
                 start_dt = end_dt - timedelta(days=90)
@@ -116,24 +102,18 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
                 quarter_data = df_chart_full.loc[start_dt_str:d]
                 if len(quarter_data) < 10: continue
                 
-                # 1. 해당 분기 평균 주가
                 quarter_avg_price = quarter_data['Close'].mean()
                 if quarter_avg_price <= 0: continue
                 
-                # 2. 공포지수
                 fg_score = calculate_fear_greed_from_slice(quarter_data)
-
-                # 3. 적정주가 (평균주가 * 심리보정)
                 correction_factor = 1 + ((50 - fg_score) / 50 * 0.1)
                 fair_price_at_quarter = quarter_avg_price * correction_factor
                 historical_fair_prices.append(fair_price_at_quarter)
 
-            # 최종 평균
             if not historical_fair_prices: continue
             avg_fair_price = sum(historical_fair_prices) / len(historical_fair_prices)
             
             price_base = to_float(row.get('Close', 0))
-            
             price_now = price_base
             if is_backtest and code in current_prices_map:
                 price_now = to_float(current_prices_map[code])
@@ -167,13 +147,12 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
 # --- 메인 UI ---
 
-st.title("🎯 V34 맞춤형 가치투자 분석기")
+st.title("🎯 V35 맞춤형 가치투자 분석기")
 
 with st.expander("📘 **[설명서] 기능 사용법 (Click)**", expanded=False):
     st.info("""
     1. **분석 기간 선택:** 1년~5년 중 선택 (해당 기간의 분기별 평균 주가로 적정가 산출)
-    2. **주식 수 설정:** - 슬라이더를 움직이거나, 
-       - 숫자 입력 후 **[적용]** 버튼을 누르면 됩니다.
+    2. **주식 수 설정:** 슬라이더를 움직이거나, 숫자 입력 후 [적용]을 누르세요.
     3. **검색:** 결과 표 위에서 종목명을 입력하고 Enter를 치면 위치를 찾아줍니다.
     """)
 
@@ -182,40 +161,40 @@ st.divider()
 # --- 1. 설정 영역 ---
 st.header("1. 분석 조건 설정")
 
-# 날짜 & 기간 선택
 col_date, col_years = st.columns([2, 1])
 with col_date:
     target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
 with col_years:
     period_years = st.selectbox("⏳ 분석 기간 (년)", [1, 2, 3, 4, 5], index=4)
 
-# [핵심 수정] 주식 수 입력 (슬라이더 + 수동입력 + 적용버튼)
+# [핵심 수정] 주식 수 입력 동기화 로직
 st.write("📊 **분석할 종목 수 설정**")
 
-# 세션 상태 초기화
 if 'target_count' not in st.session_state:
     st.session_state.target_count = 200
 
-def update_slider():
+# 슬라이더 콜백: 슬라이더 움직이면 값 업데이트
+def update_from_slider():
     st.session_state.target_count = st.session_state.slider_widget
 
-# 1. 슬라이더 (바로 반영)
+# 1. 슬라이더 (키: slider_widget)
 st.slider(
     "슬라이더로 조절", 10, 300, 
     key='slider_widget', 
     value=st.session_state.target_count, 
-    on_change=update_slider
+    on_change=update_from_slider
 )
 
-# 2. 숫자 입력 + 버튼 (버튼 눌러야 반영)
+# 2. 숫자 입력 + 버튼
 c_input, c_btn = st.columns([3, 1])
 with c_input:
-    # 입력창은 독립적으로 동작하도록 key 분리
     manual_val = st.number_input("직접 입력 (숫자)", 10, 500, value=st.session_state.target_count)
 with c_btn:
     if st.button("✅ 수치 적용"):
         st.session_state.target_count = manual_val
-        st.rerun() # 화면 새로고침하여 슬라이더와 동기화
+        # [중요] 슬라이더의 내부 상태도 강제로 업데이트!
+        st.session_state.slider_widget = manual_val
+        st.rerun()
 
 # 분석 시작 버튼
 st.markdown("---")
@@ -255,7 +234,6 @@ if os.path.exists(DB_FILE):
         df_res = df_res[df_res['평균적정주가'] > 0]
         
         if not df_res.empty:
-            # 정렬
             if "괴리율" in sort_option:
                 df_res = df_res.sort_values(by='괴리율', ascending=False)
             elif "상승액" in sort_option:
@@ -267,7 +245,6 @@ if os.path.exists(DB_FILE):
             df_res.index += 1
             df_res.index.name = "순번"
             
-            # 검색 로직
             if search_term:
                 matches = df_res[df_res['종목명'].str.contains(search_term, na=False)]
                 if not matches.empty:
@@ -276,12 +253,10 @@ if os.path.exists(DB_FILE):
                 else:
                     st.error("❌ 해당 종목을 찾을 수 없습니다.")
 
-            # 스타일링 함수
             def highlight_search(row):
                 styles = [''] * len(row)
                 if search_term and search_term in str(row['종목명']):
                     return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid orange;'] * len(row)
-                
                 if row.name == '괴리율':
                     val = row['괴리율']
                     if val > 20: return 'color: red; font-weight: bold;'
