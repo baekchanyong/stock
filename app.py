@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v51.csv"
+DB_FILE = "stock_analysis_v51_fix.csv"
 
-st.set_page_config(page_title="V51 수익중심 가치투자 분석기", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="V51 가치투자 분석기 (Fix)", page_icon="⚖️", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -136,22 +136,15 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # [핵심 변경] 수익가치(7) : 자산가치(3) 가중치 적용
-            
-            # 1. 수익가치 (Earnings Value): EPS / 금리
+            # V51 로직: 수익가치(7) : 자산가치(3) 가중치 적용
             earnings_value = 0
             if applied_rate > 0:
                 earnings_value = eps / (applied_rate / 100)
             
-            # 2. 자산가치 (Asset Value): BPS
             asset_value = bps
-            
-            # 3. 가중 평균 적정주가 (7:3)
             base_fair_price = (earnings_value * 0.7) + (asset_value * 0.3)
             
-            # 4. 심리 보정
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-            
             fair_price = base_fair_price * sentiment_factor
             
             gap = 0
@@ -182,20 +175,20 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("⚖️ V51 수익중심 가치투자 분석기 (7:3)")
+st.title("⚖️ V51_Fix 수익중심 가치투자 분석기")
 
-with st.expander("📘 **[NEW] 적정주가 산출 원리 (수익 7 : 자산 3)**", expanded=True):
-    st.info("💡 **수익(돈 버는 능력)**에 70%의 가중치를 두어, 실적 좋은 기업을 우대합니다.")
-    
+# [요청 1] 산출식 설명 추가
+with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식**", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("##### 1. 가치 평가 기준")
-        st.latex(r"\text{수익가치} = \frac{\text{EPS}}{\text{금리}} \quad (70\%)")
-        st.latex(r"\text{자산가치} = \text{BPS} \quad (30\%)")
+        st.markdown("##### 🧮 적정주가 산출식 (수익 7 : 자산 3)")
+        st.latex(r"\text{수익가치} = \frac{\text{EPS}}{\text{한국은행 기준금리}}")
+        st.latex(r"\text{적정가} = [(\text{수익가치} \times 0.7) + (\text{BPS} \times 0.3)] \times \text{심리보정}")
     
     with c2:
-        st.markdown("##### 2. 최종 공식")
-        st.latex(r"\text{적정가} = (\text{수익가치} \times 0.7 + \text{자산가치} \times 0.3) \times \text{심리보정}")
+        st.markdown("##### 👻 공포탐욕지수 산출식")
+        st.latex(r"\text{Index} = (\text{RSI}_{14} \times 0.5) + (\text{이격도}_{20} \text{ 점수} \times 0.5)")
+        st.caption("* 공포(0)일 때 적정가 상향, 탐욕(100)일 때 하향")
 
 st.divider()
 
@@ -206,21 +199,36 @@ mode = st.radio("분석 모드", ["🏆 시가총액 상위", "🔍 종목 검�
 target_stocks = pd.DataFrame()
 
 if mode == "🏆 시가총액 상위":
-    if 'stock_count' not in st.session_state: st.session_state.stock_count = 200
-    
-    def update_slider(): st.session_state.stock_count = st.session_state.slider_widget
-    def apply_manual(): st.session_state.stock_count = st.session_state.num_input
+    # [요청 2] 슬라이더 오류 해결을 위한 세션 상태 관리
+    if 'stock_count' not in st.session_state:
+        st.session_state.stock_count = 200
+
+    # 슬라이더용 콜백
+    def update_from_slider():
+        st.session_state.stock_count = st.session_state.slider_key
+
+    # 숫자 입력용 콜백
+    def apply_manual_input():
+        st.session_state.stock_count = st.session_state.num_key
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.slider("종목 수", 10, 500, key='slider_widget', value=st.session_state.stock_count, on_change=update_slider)
+        st.slider(
+            "종목 수", 10, 500, 
+            key='slider_key', 
+            value=st.session_state.stock_count, 
+            on_change=update_from_slider
+        )
     with c2:
-        st.number_input("직접 입력", 10, 500, key='num_input', value=st.session_state.stock_count, on_change=apply_manual)
-        
-    if st.button("✅ 수치 적용"):
-        apply_manual()
-        st.session_state.slider_widget = st.session_state.stock_count
-        st.rerun()
+        # 입력창은 별도 키(num_key)를 가짐
+        st.number_input(
+            "직접 입력", 10, 500, 
+            key='num_key', 
+            value=st.session_state.stock_count
+        )
+        # [핵심 수정] on_click으로 값 업데이트 후 rerun으로 화면 갱신
+        if st.button("✅ 수치 적용", on_click=apply_manual_input):
+            st.rerun()
 
 elif mode == "🔍 종목 검색":
     query = st.text_input("종목명 검색", placeholder="예: 삼성")
