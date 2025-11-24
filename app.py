@@ -10,19 +10,28 @@ import yfinance as yf
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v66.csv"
+DB_FILE = "stock_analysis_v67.csv"
 
-st.set_page_config(page_title="V66 가치투자 분석기 (표 출력 보장)", page_icon="💎", layout="wide")
+st.set_page_config(page_title="V67 가치투자 분석기 (적정주가 복구)", page_icon="💎", layout="wide")
 
-# --- 헬퍼 함수 ---
+# --- [핵심] 강력한 숫자 변환 함수 ---
 def to_float(val):
+    """
+    어떤 이상한 값이 들어와도 강제로 실수형(float)으로 변환합니다.
+    """
+    if pd.isna(val) or val == '' or val == 'N/A': return 0.0
     try:
-        if pd.isna(val) or val == '' or str(val).strip() == '-': return 0.0
-        clean_val = str(val).replace(',', '').replace('%', '')
-        return float(clean_val)
-    except: return 0.0
+        # 문자열인 경우 쉼표, 퍼센트 제거
+        if isinstance(val, str):
+            clean_val = val.replace(',', '').replace('%', '').strip()
+            if clean_val == '-' or clean_val == '': return 0.0
+            return float(clean_val)
+        # 이미 숫자인 경우
+        return float(val)
+    except:
+        return 0.0
 
-# --- [금리] 한국은행 기준금리 ---
+# --- 한국은행 기준금리 ---
 def get_bok_base_rate():
     url = "https://finance.naver.com/marketindex/"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -35,11 +44,11 @@ def get_bok_base_rate():
         return 3.25 
     except: return 3.25
 
-# --- [과거 금리 추정] ---
+# --- 과거 금리 ---
 def get_historical_base_rate(date_str):
     return 3.50
 
-# --- [데이터 수집] 휴일 보정 ---
+# --- 데이터 수집 (휴일 보정) ---
 def get_stock_listing_with_retry(market, date_str, max_retries=5):
     curr_date = datetime.strptime(date_str, "%Y-%m-%d")
     for _ in range(max_retries):
@@ -52,13 +61,20 @@ def get_stock_listing_with_retry(market, date_str, max_retries=5):
         curr_date -= timedelta(days=1)
     return pd.DataFrame()
 
-# --- [핵심] 3중 데이터 확보 전략 ---
+# --- [핵심 수정] 데이터 확보 및 역산 로직 강화 ---
 def get_robust_metrics(code, row):
+    """
+    EPS, BPS가 없으면 PER, PBR과 주가를 이용해 강제로 역산합니다.
+    """
     current_price = to_float(row.get('Close', 0))
+    
+    # 1. 1차 시도: 리스트에 있는 값 가져오기
     eps = to_float(row.get('EPS', 0))
     bps = to_float(row.get('BPS', 0))
+    per = to_float(row.get('PER', 0))
+    pbr = to_float(row.get('PBR', 0))
     
-    # 1. 야후 파이낸스 백업
+    # 2. 2차 시도: 야후 파이낸스 (0일 경우만)
     if eps == 0 or bps == 0:
         try:
             ticker = yf.Ticker(f"{code}.KS")
@@ -66,13 +82,18 @@ def get_robust_metrics(code, row):
             if eps == 0 and info.get('trailingEps'): eps = float(info['trailingEps'])
             if bps == 0 and info.get('bookValue'): bps = float(info['bookValue'])
         except: pass
-    
-    # 2. PER/PBR 역산
-    if current_price > 0:
-        per = to_float(row.get('PER', 0))
-        pbr = to_float(row.get('PBR', 0))
-        if eps == 0 and per > 0: eps = current_price / per
-        if bps == 0 and pbr > 0: bps = current_price / pbr
+        
+    # 3. 3차 시도: 역산 (가장 확실한 방법)
+    # EPS = 주가 / PER
+    if eps == 0 and current_price > 0 and per > 0:
+        eps = current_price / per
+        
+    # BPS = 주가 / PBR
+    if bps == 0 and current_price > 0 and pbr > 0:
+        bps = current_price / pbr
+        
+    # 4. 최후의 방어: PBR은 있는데 BPS가 없으면 역산
+    # 그래도 없으면 0 리턴 (적자 기업 등)
         
     return eps, bps
 
@@ -93,11 +114,10 @@ def calculate_fear_greed_from_slice(df_slice):
         return 50 if pd.isna(val) else val
     except: return 50
 
-# --- CSV 저장 ---
+# --- CSV 저장 (평탄화) ---
 def save_to_csv_flat(data_list):
     if not data_list: return
     df = pd.DataFrame(data_list)
-    # 저장 시점에는 컬럼명을 문자열로 유지
     new_cols = []
     for col in df.columns:
         if isinstance(col, tuple):
@@ -121,8 +141,9 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
         q_date_str = temp_date.strftime('%Y-%m-%d')
         quarters.append(q_date_str)
     
-    status_text.info(f"📅 과거 2년(8개 분기) 데이터를 정밀 복원 중입니다...")
+    status_text.info(f"📅 과거 2년(8개 분기) 데이터를 복원 중입니다...")
 
+    # 과거 데이터 스냅샷 로딩
     snapshot_dfs = {}
     try:
         for i, q_date in enumerate(quarters):
@@ -153,6 +174,8 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
         
         try:
             current_price = to_float(row.get('Close', 0))
+            
+            # [수정] 강력해진 데이터 확보 함수 호출
             eps_now, bps_now = get_robust_metrics(code, row)
             
             time.sleep(0.02)
@@ -162,15 +185,29 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
             if not df_chart_full.empty:
                 fg_score_now = calculate_fear_greed_from_slice(df_chart_full.tail(60))
             
-            base_rate = applied_rate
-            earnings_val = eps_now / (base_rate/100) if base_rate > 0 else 0
-            base_fair = (earnings_val * 0.7) + (bps_now * 0.3)
+            # 적정주가 계산 (안전장치: 금리 0 방지)
+            base_rate = applied_rate if applied_rate > 0 else 3.5
+            
+            # 수익가치 (EPS 기반)
+            earnings_val = eps_now / (base_rate/100)
+            
+            # 자산가치 (BPS 기반)
+            asset_val = bps_now
+            
+            # 7:3 가중치
+            base_fair = (earnings_val * 0.7) + (asset_val * 0.3)
+            
+            # 심리 보정
             sentiment = 1 + ((50 - fg_score_now)/50 * 0.1)
             fair_now = base_fair * sentiment
             
             gap_now = 0
             if current_price > 0:
                 gap_now = (fair_now - current_price) / current_price * 100
+            
+            # ROE 계산 (보여주기용)
+            roe_now = 0
+            if bps_now > 0: roe_now = (eps_now / bps_now) * 100
             
             data_row = {
                 '기본정보_종목코드': code,
@@ -180,10 +217,11 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                 '현재정보_괴리율': round(gap_now, 2),
                 '지표_공포지수': round(fg_score_now, 1),
                 '지표_EPS': round(eps_now, 0),
-                '지표_BPS': round(bps_now, 0)
+                '지표_BPS': round(bps_now, 0),
+                '지표_ROE(%)': round(roe_now, 2)
             }
             
-            # 과거 데이터 (8분기)
+            # 과거 데이터 (히스토리) 처리
             for q_date in quarters:
                 q_end_dt = datetime.strptime(q_date, '%Y-%m-%d')
                 q_start_dt = q_end_dt - timedelta(days=90)
@@ -203,6 +241,7 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                     if not q_chart.empty:
                         q_avg_price = q_chart['Close'].mean()
                         
+                        # 스냅샷 찾기
                         found_snap = None
                         for snap_date in snapshot_dfs.keys():
                             diff = abs((datetime.strptime(snap_date, '%Y-%m-%d') - q_end_dt).days)
@@ -212,10 +251,15 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                         
                         if found_snap is not None and code in found_snap.index:
                             snap_row = found_snap.loc[code]
+                            
+                            # [중요] 과거 데이터도 강력한 역산 로직 적용
                             q_eps, q_bps = get_robust_metrics(code, snap_row)
+                            
                             q_fg = calculate_fear_greed_from_slice(q_chart)
                             q_rate = get_historical_base_rate(q_date)
                             
+                            # 적정주가 계산
+                            q_rate = q_rate if q_rate > 0 else 3.5
                             q_earn = q_eps / (q_rate/100)
                             q_base = (q_earn * 0.7) + (q_bps * 0.3)
                             q_sent = 1 + ((50 - q_fg)/50 * 0.1)
@@ -239,19 +283,17 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
 
 # --- 메인 UI ---
 
-st.title("💎 가치투자 분석기 (V66 표 출력 보장)")
+st.title("💎 V67 가치투자 분석기 (적정주가 복구)")
 
-with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식**", expanded=True):
+with st.expander("📘 **[필독] 적정주가 산출 공식**", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("##### 🧮 적정주가 산출식 (하이브리드)")
+        st.markdown("##### 🧮 적정주가 (수익7 : 자산3)")
         st.latex(r"\text{적정주가} = \left[ \left( \frac{\text{EPS}}{\text{금리}} \times 0.7 \right) + \left( \text{BPS} \times 0.3 \right) \right] \times \text{심리보정}")
-        st.caption("* **금리:** 한국은행 기준금리 (실시간)")
-        st.caption(r"* **심리보정:** $1 + \frac{50 - \text{공포지수}}{50} \times 0.1$")
+        st.caption("* 금리: 한국은행 기준금리 (약 3.25%)")
     with c2:
-        st.markdown("##### 👻 공포탐욕지수 산출식")
+        st.markdown("##### 👻 공포탐욕지수")
         st.latex(r"\text{Index} = (\text{RSI}_{14} \times 0.5) + (\text{이격도}_{20} \text{ 점수} \times 0.5)")
-        st.caption("* 0에 가까울수록 공포(매수), 100에 가까울수록 탐욕(매도)")
 
 st.divider()
 
@@ -273,18 +315,9 @@ if mode == "🏆 시가총액 상위":
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.slider(
-            "종목 수", 10, 500, 
-            key='slider_key', 
-            value=st.session_state.stock_count, 
-            on_change=update_from_slider
-        )
+        st.slider("종목 수", 10, 500, key='slider_key', value=st.session_state.stock_count, on_change=update_from_slider)
     with c2:
-        st.number_input(
-            "직접 입력", 10, 500, 
-            key='num_key', 
-            value=st.session_state.stock_count
-        )
+        st.number_input("직접 입력", 10, 500, key='num_key', value=st.session_state.stock_count)
         if st.button("✅ 수치 적용", on_click=apply_manual_input):
             st.rerun()
 
@@ -322,7 +355,7 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     bok_rate = get_bok_base_rate()
     applied_rate = bok_rate if bok_rate else 3.25
     
-    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 데이터 정밀 분석 시작...")
+    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 분석을 시작합니다...")
     time.sleep(0.5)
     
     p_bar = st.progress(0)
@@ -342,7 +375,6 @@ if os.path.exists(DB_FILE):
     try:
         df = pd.read_csv(DB_FILE)
         
-        # 숫자 변환
         numeric_targets = ['현재가', '적정주가', '괴리율', 'EPS', 'BPS', 'ROE', '공포지수', '평균주가', '적정가']
         for col in df.columns:
             if any(t in col for t in numeric_targets):
@@ -353,8 +385,8 @@ if os.path.exists(DB_FILE):
         elif '종목코드' in df.columns:
              df = df.drop_duplicates(['종목코드'], keep='last')
         
-        # [수정] 적정가가 0원이어도 숨기지 않고 다 보여줍니다 (데이터 누락 여부 확인용)
-        # df = df[df['현재정보_적정주가'] > 0] <--- 삭제됨
+        # [수정] 적정가 0원인 종목도 표시 (데이터 상태 확인용)
+        # df = df[df['현재정보_적정주가'] > 0] <--- 제거함
         
         # 정렬
         sort_col = '현재정보_괴리율'
@@ -371,7 +403,7 @@ if os.path.exists(DB_FILE):
         df.index += 1
         df.index.name = "순위"
 
-        # MultiIndex 변환
+        # UI 복원
         if '기본정보_종목명' in df.columns:
             df_display = df.set_index('기본정보_종목명', append=True)
         else:
@@ -387,7 +419,7 @@ if os.path.exists(DB_FILE):
         
         df_display.columns = pd.MultiIndex.from_tuples(new_cols)
         
-        # 표시 컬럼
+        # 컬럼 순서
         display_cols = [
             ('현재정보', '현재가'), ('현재정보', '적정주가'), ('현재정보', '괴리율'),
             ('지표', '공포지수'), ('지표', 'ROE(%)'), ('지표', 'EPS'), ('지표', 'BPS')
@@ -420,5 +452,5 @@ if os.path.exists(DB_FILE):
             use_container_width=True
         )
         
-    except Exception as e: st.error(f"표시 오류: {e}")
+    except Exception as e: st.error(f"표시 오류 상세: {e}")
 else: st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
