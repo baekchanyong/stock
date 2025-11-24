@@ -7,9 +7,9 @@ import time
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v35.csv"
+DB_FILE = "stock_analysis_v36.csv"
 
-st.set_page_config(page_title="V35 가치투자 분석기", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="V36 가치투자 분석기", page_icon="🎯", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -147,12 +147,12 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
 # --- 메인 UI ---
 
-st.title("🎯 V35 맞춤형 가치투자 분석기")
+st.title("🎯 V36 맞춤형 가치투자 분석기")
 
 with st.expander("📘 **[설명서] 기능 사용법 (Click)**", expanded=False):
     st.info("""
     1. **분석 기간 선택:** 1년~5년 중 선택 (해당 기간의 분기별 평균 주가로 적정가 산출)
-    2. **주식 수 설정:** 슬라이더를 움직이거나, 숫자 입력 후 [적용]을 누르세요.
+    2. **주식 수 설정:** 슬라이더를 움직이거나, 숫자 입력 후 **[적용]** 버튼을 누르세요.
     3. **검색:** 결과 표 위에서 종목명을 입력하고 Enter를 치면 위치를 찾아줍니다.
     """)
 
@@ -167,41 +167,45 @@ with col_date:
 with col_years:
     period_years = st.selectbox("⏳ 분석 기간 (년)", [1, 2, 3, 4, 5], index=4)
 
-# [핵심 수정] 주식 수 입력 동기화 로직
+# [핵심 수정] 주식 수 입력 에러 해결 로직
 st.write("📊 **분석할 종목 수 설정**")
 
-if 'target_count' not in st.session_state:
-    st.session_state.target_count = 200
+# 1. 세션 상태(변수) 초기화
+if 'stock_count' not in st.session_state:
+    st.session_state.stock_count = 200
 
-# 슬라이더 콜백: 슬라이더 움직이면 값 업데이트
+# 2. 콜백 함수 정의 (버튼 누를 때 실행될 함수)
+def apply_manual_input():
+    # 입력창(num_key)의 값을 가져와서 메인 변수(stock_count)에 덮어씌움
+    st.session_state.stock_count = st.session_state.num_key
+
 def update_from_slider():
-    st.session_state.target_count = st.session_state.slider_widget
+    # 슬라이더(slider_key)를 움직이면 메인 변수 업데이트
+    st.session_state.stock_count = st.session_state.slider_key
 
-# 1. 슬라이더 (키: slider_widget)
+# 3. 슬라이더 (메인 변수와 연동)
 st.slider(
     "슬라이더로 조절", 10, 300, 
-    key='slider_widget', 
-    value=st.session_state.target_count, 
+    key='slider_key', 
+    value=st.session_state.stock_count, 
     on_change=update_from_slider
 )
 
-# 2. 숫자 입력 + 버튼
+# 4. 숫자 입력 + 적용 버튼
 c_input, c_btn = st.columns([3, 1])
 with c_input:
-    manual_val = st.number_input("직접 입력 (숫자)", 10, 500, value=st.session_state.target_count)
+    # 입력창은 메인 변수 값을 기본값으로 가짐
+    st.number_input("직접 입력 (숫자)", 10, 500, key='num_key', value=st.session_state.stock_count)
 with c_btn:
-    if st.button("✅ 수치 적용"):
-        st.session_state.target_count = manual_val
-        # [중요] 슬라이더의 내부 상태도 강제로 업데이트!
-        st.session_state.slider_widget = manual_val
-        st.rerun()
+    # 버튼을 누르면 'apply_manual_input' 함수가 먼저 실행됨 -> 값 업데이트 -> 화면 새로고침
+    st.button("✅ 수치 적용", on_click=apply_manual_input)
 
 # 분석 시작 버튼
 st.markdown("---")
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     status_box = st.empty()
     p_bar = st.progress(0)
-    is_done = run_custom_analysis(target_date, period_years, st.session_state.target_count, status_box, p_bar)
+    is_done = run_custom_analysis(target_date, period_years, st.session_state.stock_count, status_box, p_bar)
     if is_done:
         status_box.success(f"✅ 분석 완료! ({period_years}년치 데이터 반영)")
 
@@ -234,6 +238,7 @@ if os.path.exists(DB_FILE):
         df_res = df_res[df_res['평균적정주가'] > 0]
         
         if not df_res.empty:
+            # 정렬
             if "괴리율" in sort_option:
                 df_res = df_res.sort_values(by='괴리율', ascending=False)
             elif "상승액" in sort_option:
