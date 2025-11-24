@@ -7,9 +7,9 @@ import time
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v27.csv"
+DB_FILE = "stock_analysis_v29.csv"
 
-st.set_page_config(page_title="V27 4분기 평균 가치투자", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="V29 심플 가치투자 분석기", page_icon="⚡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -18,12 +18,9 @@ def to_float(val):
         return float(str(val).replace(',', '').replace('%', ''))
     except: return 0.0
 
-# --- 공포탐욕지수 (차트 데이터 슬라이싱 활용) ---
+# --- 공포탐욕지수 (차트 슬라이싱) ---
 def calculate_fear_greed_from_slice(df_slice):
-    """
-    잘라낸 차트 데이터로 공포지수 계산
-    """
-    if len(df_slice) < 20: return 50 # 데이터 너무 적으면 중립
+    if len(df_slice) < 20: return 50
     
     # RSI (14)
     delta = df_slice['Close'].diff()
@@ -38,12 +35,9 @@ def calculate_fear_greed_from_slice(df_slice):
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
     
     try:
-        # 마지막 값 사용
         last_rsi = rsi.iloc[-1]
         last_disp = disparity_score.iloc[-1]
-        
         if pd.isna(last_rsi) or pd.isna(last_disp): return 50
-        
         return (last_rsi * 0.5) + (last_disp * 0.5)
     except: return 50
 
@@ -55,44 +49,45 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 핵심 분석 엔진 (쿼터백 시스템) ---
-def run_quarterly_analysis(target_date, target_num, status_text, progress_bar):
+# --- 핵심 분석 엔진 (심플 버전) ---
+def run_simple_analysis(target_date, target_num, status_text, progress_bar):
     
-    # 1. 4개의 시점 날짜 계산 (0, -3, -6, -9개월)
+    # 1. 5년(20분기) 날짜 생성
     dates = []
-    for i in range(4):
-        d = target_date - timedelta(days=91 * i) # 약 3개월 간격
+    for i in range(20): 
+        d = target_date - timedelta(days=91 * i)
         dates.append(d.strftime('%Y-%m-%d'))
     
-    # 백테스팅 여부 확인 (가장 최근 날짜 기준)
+    target_str = dates[0]
     today_str = datetime.now().strftime('%Y-%m-%d')
-    is_backtest = (dates[0] != today_str)
+    is_backtest = (target_str != today_str)
 
-    status_text.info(f"📅 4개 분기 데이터({', '.join(dates)})를 모두 복원 중입니다... (속도 최적화 적용)")
+    status_text.info(f"⚡ 과거 5년(20분기)의 [주가]와 [심리]를 분석하여 적정가를 도출합니다...")
 
-    # 2. [속도 최적화] 4개 시점의 KRX 리스트를 미리 한 번에 다 가져옴 (캐싱)
-    # 루프 안에서 매번 부르면 200종목 * 4회 = 800번 요청해야 해서 엄청 느림 -> 미리 4번만 요청
+    # 2. 데이터 스냅샷 로딩
     df_krx_snapshots = {}
-    
     try:
-        # 메인 리스트 (종목 선정용 - 가장 최근 기준일)
-        df_main = fdr.StockListing('KRX', dates[0])
+        # 종목 선정용 메인 리스트
+        df_main = fdr.StockListing('KRX', target_str)
         df_main = df_main[df_main['Market'].isin(['KOSPI'])]
         df_main = df_main.sort_values(by='Marcap', ascending=False)
         target_stocks = df_main.head(target_num)
         
-        # 4개 시점 데이터 미리 로드
-        for d in dates:
-            status_text.text(f"📥 과거 데이터셋 복원 중... ({d})")
-            snapshot = fdr.StockListing('KRX', d)
-            # 빠른 검색을 위해 종목코드를 인덱스로 설정
-            df_krx_snapshots[d] = snapshot.set_index('Code')
+        # 20개 시점 주가 데이터 로딩
+        for i, d in enumerate(dates):
+            # UI 갱신 최소화 (속도 향상)
+            if i % 5 == 0: status_text.text(f"📥 과거 주가 데이터 복원 중... ({d})")
+            try:
+                snapshot = fdr.StockListing('KRX', d)
+                if not snapshot.empty:
+                    df_krx_snapshots[d] = snapshot.set_index('Code')['Close'] # 주가만 가져옴
+            except: pass
             
     except Exception as e:
-        st.error(f"데이터셋 로드 실패: {e}")
+        st.error(f"데이터 로드 실패: {e}")
         return
 
-    # 현재가 로딩 (수익률 검증용)
+    # 현재가 로딩 (검증용)
     current_prices_map = {}
     if is_backtest:
         try:
@@ -105,109 +100,82 @@ def run_quarterly_analysis(target_date, target_num, status_text, progress_bar):
     total = len(target_stocks)
     new_data = []
     
-    # 차트 데이터용 시작일 (가장 옛날 기준일로부터 1년 전)
+    # 차트 데이터 시작일 (6년 전)
     chart_start_date = (datetime.strptime(dates[-1], '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d')
 
-    # --- 종목별 반복 분석 시작 ---
+    # --- 종목별 분석 ---
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
         
+        # 제외 종목
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} : 1년치 흐름 정밀 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 분석 중...")
         
         try:
-            # [속도 최적화] 차트 데이터를 1번만 가져와서 메모리에서 자름
-            time.sleep(0.05)
-            df_chart_full = fdr.DataReader(code, chart_start_date, dates[0])
+            # 차트 데이터 (한 번에 로딩)
+            time.sleep(0.01)
+            df_chart_full = fdr.DataReader(code, chart_start_date, target_str)
             
-            quarterly_fair_prices = [] # 4번의 적정주가를 담을 리스트
+            historical_fair_prices = []
             
-            # --- 4분기 반복 계산 ---
+            # 20분기 루프
             for d in dates:
-                # 해당 시점의 재무 데이터 꺼내기
-                if code not in df_krx_snapshots[d].index:
-                    continue # 그 당시에 상장 안 되어 있었으면 스킵
+                # 해당 시점 주가가 없으면 패스
+                if d not in df_krx_snapshots or code not in df_krx_snapshots[d].index:
+                    continue
                 
-                snap_row = df_krx_snapshots[d].loc[code]
+                price_then = to_float(df_krx_snapshots[d][code])
+                if price_then <= 0: continue
                 
-                price_then = to_float(snap_row.get('Close', 0))
-                eps = to_float(snap_row.get('EPS', 0))
-                bps = to_float(snap_row.get('BPS', 0))
-                
-                # 역산 로직 (데이터 누락 방지)
-                if eps == 0 and price_then > 0:
-                    per = to_float(snap_row.get('PER', 0))
-                    if per > 0: eps = price_then / per
-                
-                if bps == 0 and price_then > 0:
-                    pbr = to_float(snap_row.get('PBR', 0))
-                    if pbr > 0: bps = price_then / pbr
-                
-                # 공포지수 (차트 슬라이싱)
-                # 전체 차트에서 해당 날짜(d) 이전 데이터만 잘라냄
+                # 공포지수 산출
                 fg_score = 50
                 if not df_chart_full.empty:
-                    chart_slice = df_chart_full.loc[:d].tail(60) # 과거 60일치
+                    chart_slice = df_chart_full.loc[:d].tail(60)
                     fg_score = calculate_fear_greed_from_slice(chart_slice)
 
-                # ROE 프리미엄 및 적정주가 (그 시점 기준)
-                base_per = 15.0
-                base_pbr = 1.2
+                # [NEW] 심플 적정주가 공식
+                # 적정가 = 당시주가 * 심리보정계수
+                # 공포(0점) -> 주가 * 1.1 (당시 주가가 너무 쌌으니 10% 높게 쳐줌)
+                # 탐욕(100점) -> 주가 * 0.9 (당시 주가가 너무 비쌌으니 10% 깎음)
+                correction_factor = 1 + ((50 - fg_score) / 50 * 0.1)
                 
-                roe = 0
-                if bps > 0: roe = (eps / bps) * 100
-                
-                roe_premium_per = max(0, roe - 10) * 1.0 
-                roe_premium_pbr = max(0, roe - 10) * 0.1
-                
-                final_target_per = (base_per + roe_premium_per) * (1 + ((50 - fg_score) / 50 * 0.1))
-                final_target_pbr = (base_pbr + roe_premium_pbr) * (1 + ((50 - fg_score) / 50 * 0.1))
-                
-                q_fair_price = (eps * final_target_per * 0.7) + (bps * final_target_pbr * 0.3)
-                
-                if q_fair_price > 0:
-                    quarterly_fair_prices.append(q_fair_price)
+                fair_price_at_moment = price_then * correction_factor
+                historical_fair_prices.append(fair_price_at_moment)
 
-            # --- 최종 평균 산출 ---
-            if not quarterly_fair_prices: continue
+            # 최종 5년 평균 적정가
+            if not historical_fair_prices: continue
+            avg_fair_price = sum(historical_fair_prices) / len(historical_fair_prices)
             
-            avg_fair_price = sum(quarterly_fair_prices) / len(quarterly_fair_prices)
-            
-            # 기준일(가장 최근) 가격
+            # 기준일 주가
             price_base = to_float(row.get('Close', 0))
             
-            # 현재 가격 (수익률용)
+            # 현재 주가 (수익률 확인용)
             price_now = price_base
             if is_backtest and code in current_prices_map:
                 price_now = to_float(current_prices_map[code])
             
+            # 괴리율
             gap = 0
             if price_base > 0:
                 gap = (avg_fair_price - price_base) / price_base * 100
             
-            # 데이터 저장 (가장 최근 시점의 재무정보 표시)
-            # EPS, BPS 등은 참고용으로 가장 최근 분기 것만 보여줌
-            current_eps = to_float(row.get('EPS', 0))
-            current_bps = to_float(row.get('BPS', 0))
-            
             data_row = {
                 '종목코드': code,
                 '종목명': name,
-                '기준일': dates[0],
+                '기준일': target_str,
                 '기준일가격': round(price_base, 0),
                 '현재가격': round(price_now, 0),
-                '평균적정주가': round(avg_fair_price, 0), # 1년치 평균값
+                '차이금액': round(price_now - price_base, 0),
+                '5년평균적정가': round(avg_fair_price, 0),
                 '괴리율': round(gap, 2),
-                '최근공포지수': round(fg_score, 1), # 참고용
-                'EPS': round(current_eps, 0),
-                'BPS': round(current_bps, 0),
+                '최근공포지수': round(fg_score, 1)
             }
             new_data.append(data_row)
             
-            if len(new_data) >= 10:
+            if len(new_data) >= 20:
                 save_to_csv(new_data)
                 new_data = []
         except: continue
@@ -218,89 +186,88 @@ def run_quarterly_analysis(target_date, target_num, status_text, progress_bar):
 
 # --- 메인 화면 ---
 
-st.title("⚖️ 가치투자 분석기 V27 (1년 평균 보정)")
+st.title("⚡ V29 심플 가치투자 분석기")
 
-with st.expander("📘 **[NEW] 4분기 평균 적정주가 산출 방식 (Click)**", expanded=True):
-    st.markdown("""
-    이 버전은 단순히 현재 시점만 보는 것이 아니라, **과거 1년(4개 분기)의 적정주가를 모두 계산하여 평균**을 냅니다.
-    
-    1. **분석 시점:** 기준일로부터 0개월, 3개월, 6개월, 9개월 전 데이터를 모두 복원합니다.
-    2. **개별 계산:** 각 시점마다 [실적 $\times$ 공포지수 $\times$ ROE 프리미엄]을 적용해 적정가를 구합니다.
-    3. **최종 산출:** $$ \text{최종 적정주가} = \frac{\text{1분기적정가} + \text{2분기적정가} + \text{3분기적정가} + \text{4분기적정가}}{4} $$
-    
-    👉 **장점:** 일시적인 실적 쇼크나 주가 급등락에 따른 왜곡을 방지하고, 기업의 **기초 체력 추세**를 반영합니다.
-    """)
+# 설명 섹션
+with st.expander("📘 **[NEW] 심플 적정주가 산출 원리 (Price-Sentiment Model)**", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 🧮 산출 공식")
+        st.info("복잡한 재무제표(EPS/PER) 없이, **과거 주가와 시장 심리**만으로 적정가를 찾습니다.")
+        st.latex(r'''\text{시점 } t \text{ 적정가} = \text{주가}_t \times \left( 1 + \frac{50 - \text{공포지수}_t}{50} \times 0.1 \right)''')
+        st.latex(r'''\text{최종 적정주가} = \text{과거 20분기(5년) 적정가의 평균}''')
+        
+    with c2:
+        st.markdown("##### 💡 원리")
+        st.write("1. **공포 구간(지수 < 50):** 당시 주가가 저평가되었다고 보고, 적정가를 주가보다 **높게** 계산합니다.")
+        st.write("2. **탐욕 구간(지수 > 50):** 당시 주가가 거품이라고 보고, 적정가를 주가보다 **낮게** 계산합니다.")
+        st.write("3. 이것을 **5년 동안 평균** 내면, 거품과 공포가 제거된 **'진짜 가격 추세'**가 나옵니다.")
 
 st.divider()
 
-tab1, tab2 = st.tabs(["⚙️ 데이터 분석 설정", "📊 분석 결과 리포트"])
-
-with tab1:
+# UI 구성
+with st.sidebar:
     st.header("1. 분석 조건 설정")
-    col1, col2 = st.columns(2)
-    with col1:
-        target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
-        st.caption("선택한 날짜를 포함해 과거 1년치(4분기) 데이터를 정밀 분석합니다.")
-    with col2:
-        target_count = st.slider("분석 종목 수", 10, 200, 50)
+    target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
+    target_count = st.slider("분석 종목 수", 10, 300, 50)
     
-    if st.button("▶️ 정밀 분석 시작 (Deep Scan)", type="primary"):
+    if st.button("▶️ 분석 시작 (Start)", type="primary"):
         status_box = st.empty()
         p_bar = st.progress(0)
-        is_done = run_quarterly_analysis(target_date, target_count, status_box, p_bar)
+        is_done = run_simple_analysis(target_date, target_count, status_box, p_bar)
         if is_done:
-            status_box.success(f"✅ 정밀 분석 완료! 옆 탭을 확인하세요.")
+            status_box.success(f"✅ 분석 완료! 속도가 훨씬 빨라졌습니다.")
 
-with tab2:
-    st.header("🏆 1년 평균 가치투자 순위")
-    
-    sort_option = st.radio(
-        "🔀 정렬 기준", 
-        ["괴리율 높은 순", "📈 가격 상승액 순", "📉 가격 하락액 순"],
-        horizontal=True
-    )
+# 결과 화면
+st.header("🏆 5년 평균 가치투자 순위")
 
-    if st.button("🔄 결과 표 새로고침"): st.rerun()
+sort_option = st.radio(
+    "🔀 정렬 기준", 
+    ["괴리율 높은 순 (저평가)", "📈 가격 상승액 순 (수익)", "📉 가격 하락액 순 (손실)"],
+    horizontal=True
+)
 
-    if os.path.exists(DB_FILE):
-        try:
-            df_res = pd.read_csv(DB_FILE)
-            for col in ['기준일가격', '현재가격', '평균적정주가', '괴리율', 'EPS', 'BPS', '최근공포지수']:
-                if col in df_res.columns: df_res[col] = df_res[col].apply(to_float)
+if st.button("🔄 결과 표 새로고침"): st.rerun()
 
-            df_res['차이금액'] = df_res['현재가격'] - df_res['기준일가격']
-            df_res = df_res.drop_duplicates(['종목코드'], keep='last')
-            df_res = df_res[df_res['평균적정주가'] > 0]
+if os.path.exists(DB_FILE):
+    try:
+        df_res = pd.read_csv(DB_FILE)
+        for col in ['기준일가격', '현재가격', '차이금액', '5년평균적정가', '괴리율', '최근공포지수']:
+            if col in df_res.columns: df_res[col] = df_res[col].apply(to_float)
+
+        df_res = df_res.drop_duplicates(['종목코드'], keep='last')
+        df_res = df_res[df_res['5년평균적정가'] > 0]
+        
+        if not df_res.empty:
+            # 정렬
+            if "괴리율" in sort_option:
+                df_res = df_res.sort_values(by='괴리율', ascending=False)
+            elif "상승액" in sort_option:
+                df_res = df_res.sort_values(by='차이금액', ascending=False)
+            elif "하락액" in sort_option:
+                df_res = df_res.sort_values(by='차이금액', ascending=True)
+
+            df_res = df_res.reset_index(drop=True)
+            df_res.index += 1
             
-            if not df_res.empty:
-                if "괴리율" in sort_option:
-                    df_res = df_res.sort_values(by='괴리율', ascending=False)
-                elif "상승액" in sort_option:
-                    df_res = df_res.sort_values(by='차이금액', ascending=False)
-                elif "하락액" in sort_option:
-                    df_res = df_res.sort_values(by='차이금액', ascending=True)
-
-                df_res = df_res.reset_index(drop=True)
-                df_res.index += 1
-                
-                # 모바일 고정 뷰 설정
-                df_res.index.name = "순번"
-                df_display = df_res.set_index('종목명', append=True)
-                
-                top = df_res.iloc[0]
-                st.info(f"🥇 **1위: {top['종목명']}** | 1년평균 적정가: {top['평균적정주가']:,.0f}원 | 괴리율: {top['괴리율']}%")
-                
-                st.dataframe(
-                    df_display[['기준일', '기준일가격', '현재가격', '차이금액', '평균적정주가', '괴리율', '최근공포지수', 'EPS', 'BPS']].style.applymap(
-                        lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
-                        subset=['괴리율']
-                    ).applymap(
-                        lambda x: 'color: red; font-weight: bold;' if x > 0 else 'color: blue; font-weight: bold;',
-                        subset=['차이금액']
-                    ).format("{:,.0f}", subset=['기준일가격', '현재가격', '차이금액', '평균적정주가', 'EPS', 'BPS']),
-                    height=800,
-                    use_container_width=True
-                )
-            else: st.warning("데이터가 없습니다.")
-        except Exception as e: st.error(f"오류: {e}")
-    else: st.info("👈 [⚙️ 데이터 분석 설정] 탭에서 시작해주세요.")
+            # 모바일 뷰 (인덱스 고정)
+            df_res.index.name = "순번"
+            df_display = df_res.set_index('종목명', append=True)
+            
+            top = df_res.iloc[0]
+            st.info(f"🥇 **1위: {top['종목명']}** | 5년평균적정가: {top['5년평균적정가']:,.0f}원 | 괴리율: {top['괴리율']}%")
+            
+            st.dataframe(
+                df_display[['기준일', '기준일가격', '현재가격', '차이금액', '5년평균적정가', '괴리율', '최근공포지수']].style.applymap(
+                    lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
+                    subset=['괴리율']
+                ).applymap(
+                    lambda x: 'color: red; font-weight: bold;' if x > 0 else 'color: blue; font-weight: bold;',
+                    subset=['차이금액']
+                ).format("{:,.0f}", subset=['기준일가격', '현재가격', '차이금액', '5년평균적정가']),
+                height=800,
+                use_container_width=True
+            )
+        else: st.warning("데이터가 없습니다.")
+    except Exception as e: st.error(f"오류: {e}")
+else: st.info("👈 [분석 시작] 버튼을 눌러주세요.")
