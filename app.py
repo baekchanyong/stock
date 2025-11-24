@@ -8,9 +8,9 @@ import requests
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v41.csv"
+DB_FILE = "stock_analysis_v42.csv"
 
-st.set_page_config(page_title="V41 가치투자 분석기", page_icon="📢", layout="wide")
+st.set_page_config(page_title="V42 가치투자 분석기", page_icon="📡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -19,29 +19,47 @@ def to_float(val):
         return float(str(val).replace(',', '').replace('%', ''))
     except: return 0.0
 
-# --- 실시간 금리 가져오기 ---
+# --- [핵심 수정] 금리 크롤링 엔진 강화 ---
 def get_current_bond_yield():
     """
-    네이버 금융에서 BBB- 회사채 금리 크롤링.
-    성공하면 금리(float) 반환, 실패하면 None 반환.
+    네이버 금융에서 BBB- 회사채 금리를 3단계로 집요하게 찾아냅니다.
     """
-    try:
-        url = "https://finance.naver.com/marketindex/"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5) # 타임아웃 설정
-        dfs = pd.read_html(response.text, encoding='cp949')
-        
-        for df in dfs:
-            if '회사채' in df.to_string():
-                for idx, row in df.iterrows():
-                    label = str(row.iloc[0])
-                    if '회사채' in label and 'BBB-' in label:
-                        val = to_float(row.iloc[1])
-                        if val > 0: return val
-        return None # 못 찾음
-    except: return None # 에러 발생
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    
+    # 시도할 URL 목록 (메인 -> 금리상세)
+    urls = [
+        "https://finance.naver.com/marketindex/",
+        "https://finance.naver.com/marketindex/interestList.naver"
+    ]
+    
+    for url in urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=5)
+            # 인코딩 자동 감지 및 설정 (cp949 or euc-kr)
+            response.encoding = 'cp949' 
+            
+            # 테이블 파싱
+            dfs = pd.read_html(response.text)
+            
+            for df in dfs:
+                # 데이터프레임을 문자열로 변환해 '회사채' 키워드 확인
+                if '회사채' in df.to_string() or 'BBB' in df.to_string():
+                    for idx, row in df.iterrows():
+                        # 라벨 컬럼(보통 첫번째)
+                        label = str(row.iloc[0])
+                        
+                        # 'BBB-' 키워드가 포함된 행 찾기
+                        if 'BBB-' in label or ('회사채' in label and 'BBB' in label):
+                            # 보통 두 번째 컬럼이 현재 금리
+                            val = to_float(row.iloc[1])
+                            if val > 0:
+                                return val
+        except:
+            continue # 다음 URL 시도
+            
+    return None # 모든 시도 실패
 
-# --- 펀더멘털 크롤링 ---
+# --- 펀더멘털 크롤링 (기존 유지) ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -125,7 +143,6 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
         try:
             current_price = to_float(row.get('Close', 0))
             
-            # 1. 펀더멘털
             eps, bps = get_fundamentals(code)
             if eps == 0: eps = to_float(row.get('EPS', 0))
             if bps == 0: bps = to_float(row.get('BPS', 0))
@@ -133,7 +150,6 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            # 2. 공포지수
             time.sleep(0.05)
             fg_score = 50
             try:
@@ -142,7 +158,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # 3. S-RIM 계산
+            # S-RIM 계산
             k = applied_rate / 100
             target_pbr = max(0.3, roe / applied_rate)
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
@@ -176,11 +192,13 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("📢 V41 맞춤형 가치투자 분석기")
+st.title("📡 V42 가치투자 분석기 (금리수집 강화)")
 
 with st.expander("📘 **적정주가 산출 방식 및 금리 안내 (Click)**", expanded=True):
-    st.info("💡 **분석 시작**을 누르면 실시간 금리를 가져옵니다.")
-    st.markdown(r"$$ \text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{실시간금리}} \times \text{심리보정} $$")
+    st.info("💡 **분석 시작**을 누르면 실시간 금리를 3단계로 정밀 조회합니다.")
+    # 수식 오류 방지를 위해 안전하게 분리
+    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{실시간금리}} \times \text{심리보정}"
+    st.latex(latex_formula)
 
 st.divider()
 
@@ -213,6 +231,7 @@ if mode == "🏆 시가총액 상위 종목 분석":
         
     if st.button("✅ 위 수치 적용"):
         apply_manual_input()
+        st.session_state.slider_widget = st.session_state.stock_count # 동기화
         st.success(f"상위 {st.session_state.stock_count}개 종목으로 설정되었습니다.")
 
 # 모드 2: 검색
@@ -247,7 +266,6 @@ st.header("2. 분석 실행")
 
 if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_container_width=True):
     
-    # 대상 확인
     if mode == "🏆 시가총액 상위 종목 분석":
         with st.spinner("상위 종목 리스트 가져오는 중..."):
             df_krx = fdr.StockListing('KRX')
@@ -260,32 +278,28 @@ if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_contai
             st.stop()
         final_target = target_stocks
 
-    # [핵심 수정] 금리 조회 및 실패 시 명확한 경고
+    # [금리 크롤링]
     status_box = st.empty()
-    status_box.info("📡 네이버 금융에서 실시간 금리(BBB- 회사채) 조회 중...")
+    status_box.info("📡 네이버 금융에서 실시간 금리(BBB-) 정밀 조회 중...")
     
     real_rate = get_current_bond_yield()
     applied_rate = 8.0
     
     if real_rate:
         applied_rate = real_rate
-        # 성공 메시지 (초록색)
-        status_box.success(f"✅ 금리 조회 성공! 현재 시장 금리 **{applied_rate}%**를 적용합니다.")
+        status_box.success(f"✅ 조회 성공! 현재 시장 금리 **{applied_rate}%**를 적용합니다.")
     else:
-        # 실패 메시지 (빨간색 에러 박스) - 사용자가 명확히 인지하도록 함
-        status_box.error(f"❌ 실시간 금리 조회 실패! 부득이하게 **기본값 {applied_rate}%**를 적용합니다. (네이버 금융 접속 장애 등)")
-        st.toast("⚠️ 금리 조회에 실패하여 기본값(8.0%)이 적용되었습니다.", icon="⚠️") # 팝업 알림 추가
+        status_box.error(f"❌ 실시간 금리 조회 실패! 부득이하게 **기본값 {applied_rate}%**를 적용합니다.")
     
-    time.sleep(2) # 메시지 읽을 시간 확보
+    time.sleep(1.5)
     
     p_bar = st.progress(0)
     run_analysis_core(final_target, applied_rate, status_box, p_bar)
     
-    # 완료 후 최종 메시지 (금리에 따라 다르게)
     if real_rate:
         status_box.success(f"✅ 분석 완료! (적용된 실시간 금리: {applied_rate}%)")
     else:
-        status_box.warning(f"⚠️ 분석 완료! (적용된 기본 금리: {applied_rate}%) - 금리 확인 필요")
+        status_box.warning(f"⚠️ 분석 완료! (적용된 기본 금리: {applied_rate}%)")
 
 st.divider()
 
