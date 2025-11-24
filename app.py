@@ -4,12 +4,13 @@ import pandas as pd
 import numpy as np
 import os
 import time
+import requests
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v36.csv"
+DB_FILE = "stock_analysis_v38.csv"
 
-st.set_page_config(page_title="V36 가치투자 분석기", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="V38 실시간 금리 연동 분석기", page_icon="📡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -18,17 +19,87 @@ def to_float(val):
         return float(str(val).replace(',', '').replace('%', ''))
     except: return 0.0
 
+# --- [NEW] 실시간 채권 금리 크롤링 ---
+def get_current_bond_yield():
+    """
+    네이버 금융 시장지표에서 'BBB- 회사채 금리'를 가져옵니다.
+    실패 시 기본값 8.0% 반환
+    """
+    try:
+        url = "https://finance.naver.com/marketindex/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        dfs = pd.read_html(response.text, encoding='cp949')
+        
+        # 보통 금리 표는 뒤쪽에 위치함. '회사채' 키워드 찾기
+        for df in dfs:
+            if '회사채' in df.to_string() or 'CD' in df.to_string():
+                # 데이터프레임 순회
+                for idx, row in df.iterrows():
+                    # 라벨 컬럼(보통 0번) 확인
+                    label = str(row.iloc[0])
+                    if '회사채' in label and 'BBB-' in label:
+                        yield_val = to_float(row.iloc[1])
+                        if yield_val > 0:
+                            return yield_val
+        return 8.0 # 못 찾으면 기본값
+    except:
+        return 8.0
+
+# --- 네이버 금융 펀더멘털 크롤링 ---
+def get_fundamentals(code):
+    try:
+        target_code = code
+        if len(code) == 6 and code.isdigit() and not code.endswith('0'):
+            target_code = code[:-1] + '0'
+        
+        url = f"https://finance.naver.com/item/main.naver?code={target_code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        dfs = pd.read_html(response.text, encoding='cp949')
+        
+        eps = 0.0
+        bps = 0.0
+        
+        for df in dfs:
+            df_str = df.to_string()
+            if 'EPS' in df_str or 'BPS' in df_str:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[0] if c[0] == c[1] else f"{c[0]}_{c[1]}" for c in df.columns]
+                
+                for idx, row in df.iterrows():
+                    row_str = str(row.iloc[0])
+                    if 'EPS' in row_str or '주당순이익' in row_str:
+                        values = row.iloc[1:].tolist()
+                        for v in reversed(values):
+                            val = to_float(v)
+                            if val > 0: 
+                                eps = val
+                                break
+                    if 'BPS' in row_str or '주당순자산' in row_str:
+                        values = row.iloc[1:].tolist()
+                        for v in reversed(values):
+                            val = to_float(v)
+                            if val > 0: 
+                                bps = val
+                                break
+                if eps > 0 and bps > 0: break
+        return eps, bps
+    except: return 0, 0
+
 # --- 공포탐욕지수 ---
-def calculate_fear_greed_from_slice(df_slice):
-    if len(df_slice) < 10: return 50
-    delta = df_slice['Close'].diff()
+def calculate_fear_greed(df):
+    if len(df) < 30: return 50
+    delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    ma20 = df_slice['Close'].rolling(window=20).mean()
-    disparity = (df_slice['Close'] / ma20) * 100
+    
+    ma20 = df['Close'].rolling(window=20).mean()
+    disparity = (df['Close'] / ma20) * 100
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
+    
     try:
         val = (rsi.iloc[-1] * 0.5) + (disparity_score.iloc[-1] * 0.5)
         return 50 if pd.isna(val) else val
@@ -42,42 +113,26 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 분석 엔진 ---
-def run_custom_analysis(target_date, period_years, target_num, status_text, progress_bar):
-    quarter_count = period_years * 4
-    dates = []
-    for i in range(quarter_count): 
-        d = target_date - timedelta(days=91 * i)
-        dates.append(d.strftime('%Y-%m-%d'))
+# --- 분석 프로세스 ---
+def run_srim_analysis(target_num, applied_rate, status_text, progress_bar):
     
-    target_str = dates[0]
     today_str = datetime.now().strftime('%Y-%m-%d')
-    is_backtest = (target_str != today_str)
-
-    status_text.info(f"📅 기준일 [{target_str}]로부터 과거 {period_years}년({quarter_count}분기) 데이터를 분석합니다...")
+    status_text.info(f"📡 적용 금리 {applied_rate}%를 기준으로 S-RIM 적정주가를 계산합니다...")
 
     try:
-        df_main = fdr.StockListing('KRX', target_str)
-        df_main = df_main[df_main['Market'].isin(['KOSPI'])]
-        df_main = df_main.sort_values(by='Marcap', ascending=False)
-        target_stocks = df_main.head(target_num)
+        df_krx = fdr.StockListing('KRX')
+        df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
+        df_krx = df_krx.sort_values(by='Marcap', ascending=False)
+        target_stocks = df_krx.head(target_num)
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return
-
-    current_prices_map = {}
-    if is_backtest:
-        try:
-            df_now = fdr.StockListing('KRX')
-            current_prices_map = df_now.set_index('Code')['Close'].to_dict()
-        except: pass
 
     if os.path.exists(DB_FILE): os.remove(DB_FILE)
 
     total = len(target_stocks)
     new_data = []
-    chart_lookback_days = (period_years * 365) + 365
-    chart_start_date = (datetime.strptime(dates[-1], '%Y-%m-%d') - timedelta(days=365)).strftime('%Y-%m-%d')
+    chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
@@ -86,57 +141,59 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} : {period_years}년치 흐름 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 분석 중...")
         
         try:
-            time.sleep(0.01)
-            df_chart_full = fdr.DataReader(code, chart_start_date, target_str)
-            if df_chart_full.empty: continue
-
-            historical_fair_prices = []
-            for d in dates:
-                end_dt = datetime.strptime(d, "%Y-%m-%d")
-                start_dt = end_dt - timedelta(days=90)
-                start_dt_str = start_dt.strftime("%Y-%m-%d")
-                
-                quarter_data = df_chart_full.loc[start_dt_str:d]
-                if len(quarter_data) < 10: continue
-                
-                quarter_avg_price = quarter_data['Close'].mean()
-                if quarter_avg_price <= 0: continue
-                
-                fg_score = calculate_fear_greed_from_slice(quarter_data)
-                correction_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-                fair_price_at_quarter = quarter_avg_price * correction_factor
-                historical_fair_prices.append(fair_price_at_quarter)
-
-            if not historical_fair_prices: continue
-            avg_fair_price = sum(historical_fair_prices) / len(historical_fair_prices)
+            current_price = to_float(row.get('Close', 0))
             
-            price_base = to_float(row.get('Close', 0))
-            price_now = price_base
-            if is_backtest and code in current_prices_map:
-                price_now = to_float(current_prices_map[code])
+            # 1. 펀더멘털 (실시간 크롤링)
+            eps, bps = get_fundamentals(code)
+            if eps == 0: eps = to_float(row.get('EPS', 0))
+            if bps == 0: bps = to_float(row.get('BPS', 0))
+            
+            roe = 0
+            if bps > 0: roe = (eps / bps) * 100
+            
+            # 2. 공포지수
+            time.sleep(0.05)
+            fg_score = 50
+            try:
+                df_chart = fdr.DataReader(code, chart_start, today_str)
+                if not df_chart.empty:
+                    fg_score = calculate_fear_greed(df_chart)
+            except: pass
+
+            # 3. S-RIM 적정주가 계산
+            # k = 요구수익률 (실시간 금리 반영)
+            k = applied_rate / 100
+            
+            # 적정 PBR = ROE / k (이익률이 금리보다 높아야 PBR 1배 이상 받음)
+            # 최소 0.3배 방어 (망하지 않을 기업 가정)
+            target_pbr = max(0.3, roe / applied_rate)
+            
+            # 심리 보정
+            sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
+            
+            fair_price = bps * target_pbr * sentiment_factor
             
             gap = 0
-            if price_base > 0:
-                gap = (avg_fair_price - price_base) / price_base * 100
+            if current_price > 0:
+                gap = (fair_price - current_price) / current_price * 100
             
             data_row = {
                 '종목코드': code,
                 '종목명': name,
-                '기준일': target_str,
-                '분석기간(년)': period_years,
-                '기준일가격': round(price_base, 0),
-                '현재가격': round(price_now, 0),
-                '차이금액': round(price_now - price_base, 0),
-                '평균적정주가': round(avg_fair_price, 0),
+                '현재가': round(current_price, 0),
+                '적정주가': round(fair_price, 0),
                 '괴리율': round(gap, 2),
-                '최근공포지수': round(fg_score, 1)
+                'ROE(%)': round(roe, 2),
+                'EPS': round(eps, 0),
+                'BPS': round(bps, 0),
+                '공포지수': round(fg_score, 1)
             }
             new_data.append(data_row)
             
-            if len(new_data) >= 20:
+            if len(new_data) >= 10:
                 save_to_csv(new_data)
                 new_data = []
         except: continue
@@ -147,134 +204,101 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
 # --- 메인 UI ---
 
-st.title("🎯 V36 맞춤형 가치투자 분석기")
+st.title("📡 V38 실시간 금리 연동 가치투자 분석기")
 
-with st.expander("📘 **[설명서] 기능 사용법 (Click)**", expanded=False):
-    st.info("""
-    1. **분석 기간 선택:** 1년~5년 중 선택 (해당 기간의 분기별 평균 주가로 적정가 산출)
-    2. **주식 수 설정:** 슬라이더를 움직이거나, 숫자 입력 후 **[적용]** 버튼을 누르세요.
-    3. **검색:** 결과 표 위에서 종목명을 입력하고 Enter를 치면 위치를 찾아줍니다.
+# 실시간 금리 가져오기 (캐싱)
+if 'market_rate' not in st.session_state:
+    with st.spinner("실시간 시장 금리(BBB-)를 조회 중입니다..."):
+        st.session_state.market_rate = get_current_bond_yield()
+
+current_rate_display = st.session_state.market_rate
+
+with st.expander("📘 **[필독] 실시간 금리 반영 원리 (Click)**", expanded=True):
+    st.markdown(f"""
+    ##### 1. 기준 지표: BBB- 등급 회사채 금리
+    * **현재 조회된 시장 금리:** **{current_rate_display}%**
+    * **의미:** 투자자가 주식 투자 시 감수하는 위험에 대해 요구하는 **최소한의 수익률**입니다.
+    * 금리가 오르면 $\\rightarrow$ 요구수익률 상승 $\\rightarrow$ 적정주가 하락 (보수적 평가)
+    * 금리가 내리면 $\\rightarrow$ 요구수익률 하락 $\\rightarrow$ 적정주가 상승 (공격적 평가)
+    
+    ##### 2. 산출 공식 (S-RIM 응용)
+    $$ \\text{적정주가} = \\text{BPS} \\times \\frac{\\text{ROE}}{\\text{실시간금리}({current_rate_display}\\%)} \\times \\text{심리보정} $$
     """)
 
 st.divider()
 
-# --- 1. 설정 영역 ---
+# 설정 영역
 st.header("1. 분석 조건 설정")
 
-col_date, col_years = st.columns([2, 1])
-with col_date:
-    target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
-with col_years:
-    period_years = st.selectbox("⏳ 분석 기간 (년)", [1, 2, 3, 4, 5], index=4)
+col1, col2 = st.columns(2)
+with col1:
+    # 금리 선택 (자동 vs 수동)
+    rate_option = st.radio("금리 설정 방식", ["실시간 시장 금리 사용", "수동 입력"], horizontal=True)
+    
+    if rate_option == "실시간 시장 금리 사용":
+        final_rate = current_rate_display
+        st.success(f"✅ 현재 시장 금리 **{final_rate}%**를 적용합니다.")
+    else:
+        final_rate = st.number_input("희망 기대수익률 (%)", 1.0, 30.0, 8.0, 0.1)
+        st.info(f"사용자가 설정한 **{final_rate}%**를 적용합니다.")
 
-# [핵심 수정] 주식 수 입력 에러 해결 로직
-st.write("📊 **분석할 종목 수 설정**")
+with col2:
+    target_count = st.slider("분석 종목 수", 10, 300, 200)
 
-# 1. 세션 상태(변수) 초기화
-if 'stock_count' not in st.session_state:
-    st.session_state.stock_count = 200
-
-# 2. 콜백 함수 정의 (버튼 누를 때 실행될 함수)
-def apply_manual_input():
-    # 입력창(num_key)의 값을 가져와서 메인 변수(stock_count)에 덮어씌움
-    st.session_state.stock_count = st.session_state.num_key
-
-def update_from_slider():
-    # 슬라이더(slider_key)를 움직이면 메인 변수 업데이트
-    st.session_state.stock_count = st.session_state.slider_key
-
-# 3. 슬라이더 (메인 변수와 연동)
-st.slider(
-    "슬라이더로 조절", 10, 300, 
-    key='slider_key', 
-    value=st.session_state.stock_count, 
-    on_change=update_from_slider
-)
-
-# 4. 숫자 입력 + 적용 버튼
-c_input, c_btn = st.columns([3, 1])
-with c_input:
-    # 입력창은 메인 변수 값을 기본값으로 가짐
-    st.number_input("직접 입력 (숫자)", 10, 500, key='num_key', value=st.session_state.stock_count)
-with c_btn:
-    # 버튼을 누르면 'apply_manual_input' 함수가 먼저 실행됨 -> 값 업데이트 -> 화면 새로고침
-    st.button("✅ 수치 적용", on_click=apply_manual_input)
-
-# 분석 시작 버튼
-st.markdown("---")
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     status_box = st.empty()
     p_bar = st.progress(0)
-    is_done = run_custom_analysis(target_date, period_years, st.session_state.stock_count, status_box, p_bar)
+    is_done = run_srim_analysis(target_count, final_rate, status_box, p_bar)
     if is_done:
-        status_box.success(f"✅ 분석 완료! ({period_years}년치 데이터 반영)")
+        status_box.success(f"✅ 분석 완료! (적용 금리: {final_rate}%)")
 
 st.divider()
 
-# --- 2. 결과 영역 ---
-st.header("🏆 분석 결과 리포트")
+# 결과 영역
+st.header("🏆 가치투자 추천 순위")
 
-col_sort, col_search = st.columns([2, 1])
-
-with col_sort:
-    sort_option = st.radio(
-        "🔀 정렬 기준", 
-        ["괴리율 높은 순", "📈 가격 상승액 순", "📉 가격 하락액 순"],
-        horizontal=True
-    )
-
-with col_search:
-    search_term = st.text_input("🔍 종목 검색 (Enter)", placeholder="종목명 입력")
+sort_option = st.radio(
+    "🔀 정렬 기준", 
+    ["괴리율 높은 순 (저평가)", "💎 ROE 높은 순 (고수익)", "📉 낙폭 과대 순 (공포)"],
+    horizontal=True
+)
 
 if st.button("🔄 결과 표 새로고침"): st.rerun()
 
 if os.path.exists(DB_FILE):
     try:
         df_res = pd.read_csv(DB_FILE)
-        for col in ['기준일가격', '현재가격', '차이금액', '평균적정주가', '괴리율', '최근공포지수']:
+        for col in ['현재가', '적정주가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']:
             if col in df_res.columns: df_res[col] = df_res[col].apply(to_float)
 
         df_res = df_res.drop_duplicates(['종목코드'], keep='last')
-        df_res = df_res[df_res['평균적정주가'] > 0]
+        df_res = df_res[df_res['적정주가'] > 0]
         
         if not df_res.empty:
-            # 정렬
             if "괴리율" in sort_option:
                 df_res = df_res.sort_values(by='괴리율', ascending=False)
-            elif "상승액" in sort_option:
-                df_res = df_res.sort_values(by='차이금액', ascending=False)
-            elif "하락액" in sort_option:
-                df_res = df_res.sort_values(by='차이금액', ascending=True)
+            elif "ROE" in sort_option:
+                df_res = df_res.sort_values(by='ROE(%)', ascending=False)
+            elif "낙폭" in sort_option:
+                df_res = df_res.sort_values(by='공포지수', ascending=True)
 
             df_res = df_res.reset_index(drop=True)
             df_res.index += 1
             df_res.index.name = "순번"
             
+            search_term = st.text_input("🔍 결과 내 검색", placeholder="종목명")
             if search_term:
-                matches = df_res[df_res['종목명'].str.contains(search_term, na=False)]
-                if not matches.empty:
-                    match_row = matches.iloc[0]
-                    st.success(f"🔎 **'{match_row['종목명']}'** 찾음! 현재 **{match_row.name}위**")
-                else:
-                    st.error("❌ 해당 종목을 찾을 수 없습니다.")
+                df_res = df_res[df_res['종목명'].str.contains(search_term, na=False)]
 
-            def highlight_search(row):
-                styles = [''] * len(row)
-                if search_term and search_term in str(row['종목명']):
-                    return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid orange;'] * len(row)
-                if row.name == '괴리율':
-                    val = row['괴리율']
-                    if val > 20: return 'color: red; font-weight: bold;'
-                    elif val < 0: return 'color: blue;'
-                return styles
-
+            if not df_res.empty:
+                top = df_res.iloc[0]
+                st.info(f"🥇 **1위: {top['종목명']}** | ROE: {top['ROE(%)']}% | 금리대비 초과수익: {top['ROE(%)'] - final_rate:.1f}%p")
+            
             st.dataframe(
-                df_res[['기준일', '종목명', '기준일가격', '현재가격', '차이금액', '평균적정주가', '괴리율', '최근공포지수']].style.apply(
-                    highlight_search, axis=1
-                ).applymap(
-                    lambda x: 'color: red; font-weight: bold;' if x > 0 else 'color: blue; font-weight: bold;',
-                    subset=['차이금액']
-                ).format("{:,.0f}", subset=['기준일가격', '현재가격', '차이금액', '평균적정주가']),
+                df_res[['종목명', '현재가', '적정주가', '괴리율', 'ROE(%)', 'EPS', 'BPS', '공포지수']].style.applymap(
+                    lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
+                    subset=['괴리율']
+                ).format("{:,.0f}", subset=['현재가', '적정주가', 'EPS', 'BPS']),
                 height=800,
                 use_container_width=True
             )
