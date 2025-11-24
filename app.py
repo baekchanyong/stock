@@ -8,9 +8,9 @@ import requests
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v38.csv"
+DB_FILE = "stock_analysis_v39.csv"
 
-st.set_page_config(page_title="V38 실시간 금리 연동 분석기", page_icon="📡", layout="wide")
+st.set_page_config(page_title="V39 실시간 금리 연동 분석기", page_icon="📡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -146,7 +146,6 @@ def run_srim_analysis(target_num, applied_rate, status_text, progress_bar):
         try:
             current_price = to_float(row.get('Close', 0))
             
-            # 1. 펀더멘털 (실시간 크롤링)
             eps, bps = get_fundamentals(code)
             if eps == 0: eps = to_float(row.get('EPS', 0))
             if bps == 0: bps = to_float(row.get('BPS', 0))
@@ -154,7 +153,6 @@ def run_srim_analysis(target_num, applied_rate, status_text, progress_bar):
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            # 2. 공포지수
             time.sleep(0.05)
             fg_score = 50
             try:
@@ -163,17 +161,13 @@ def run_srim_analysis(target_num, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # 3. S-RIM 적정주가 계산
-            # k = 요구수익률 (실시간 금리 반영)
-            k = applied_rate / 100
+            # S-RIM 적정주가 계산
+            k = applied_rate / 100 # 요구수익률
             
-            # 적정 PBR = ROE / k (이익률이 금리보다 높아야 PBR 1배 이상 받음)
-            # 최소 0.3배 방어 (망하지 않을 기업 가정)
+            # 최소 PBR 0.3배 방어
             target_pbr = max(0.3, roe / applied_rate)
             
-            # 심리 보정
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-            
             fair_price = bps * target_pbr * sentiment_factor
             
             gap = 0
@@ -204,26 +198,30 @@ def run_srim_analysis(target_num, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("📡 V38 실시간 금리 연동 가치투자 분석기")
+st.title("📡 V39 실시간 금리 연동 가치투자 분석기")
 
-# 실시간 금리 가져오기 (캐싱)
+# 실시간 금리 (캐싱)
 if 'market_rate' not in st.session_state:
-    with st.spinner("실시간 시장 금리(BBB-)를 조회 중입니다..."):
+    with st.spinner("실시간 시장 금리(BBB-) 조회 중..."):
         st.session_state.market_rate = get_current_bond_yield()
 
 current_rate_display = st.session_state.market_rate
 
+# [수정] 오류가 났던 부분을 안전하게 분리했습니다.
 with st.expander("📘 **[필독] 실시간 금리 반영 원리 (Click)**", expanded=True):
+    # 1. 텍스트 설명
     st.markdown(f"""
     ##### 1. 기준 지표: BBB- 등급 회사채 금리
     * **현재 조회된 시장 금리:** **{current_rate_display}%**
-    * **의미:** 투자자가 주식 투자 시 감수하는 위험에 대해 요구하는 **최소한의 수익률**입니다.
-    * 금리가 오르면 $\\rightarrow$ 요구수익률 상승 $\\rightarrow$ 적정주가 하락 (보수적 평가)
-    * 금리가 내리면 $\\rightarrow$ 요구수익률 하락 $\\rightarrow$ 적정주가 상승 (공격적 평가)
+    * **의미:** 주식 투자 시 요구되는 **최소한의 수익률**입니다. (금리 상승 시 적정주가 하락)
     
     ##### 2. 산출 공식 (S-RIM 응용)
-    $$ \\text{적정주가} = \\text{BPS} \\times \\frac{\\text{ROE}}{\\text{실시간금리}({current_rate_display}\\%)} \\times \\text{심리보정} $$
     """)
+    
+    # 2. 수식 (안전하게 별도 처리)
+    # 파이썬 f-string과 LaTeX 백슬래시 충돌 방지를 위해 분리
+    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{실시간금리}(" + str(current_rate_display) + r"\%)} \times \text{심리보정}"
+    st.latex(latex_formula)
 
 st.divider()
 
@@ -232,7 +230,6 @@ st.header("1. 분석 조건 설정")
 
 col1, col2 = st.columns(2)
 with col1:
-    # 금리 선택 (자동 vs 수동)
     rate_option = st.radio("금리 설정 방식", ["실시간 시장 금리 사용", "수동 입력"], horizontal=True)
     
     if rate_option == "실시간 시장 금리 사용":
