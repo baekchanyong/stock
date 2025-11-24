@@ -6,12 +6,13 @@ import os
 import time
 import requests
 import re
+import yfinance as yf
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v51_fix.csv"
+DB_FILE = "stock_analysis_v68.csv"
 
-st.set_page_config(page_title="V51 가치투자 분석기 (Fix)", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="V68 가치투자 분석기 (주봉적용)", page_icon="⚖️", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -34,81 +35,133 @@ def get_bok_base_rate():
         return 3.25 
     except: return 3.25
 
-# --- 펀더멘털 정밀 크롤링 ---
-def get_fundamentals(code):
-    try:
-        target_code = code
-        if len(code) == 6 and code.isdigit() and not code.endswith('0'):
-            target_code = code[:-1] + '0'
-        
-        url = f"https://finance.naver.com/item/main.naver?code={target_code}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=2)
-        
-        html = response.text
-        dfs = pd.read_html(html, encoding='cp949')
-        
-        eps, bps = 0.0, 0.0
-        for df in dfs:
-            if 'EPS' in df.to_string() or 'BPS' in df.to_string():
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[0] for c in df.columns]
-                for idx, row in df.iterrows():
-                    row_str = str(row.iloc[0])
-                    if 'EPS' in row_str or '주당순이익' in row_str:
-                        vals = row.iloc[1:].tolist()
-                        for v in reversed(vals):
-                            val = to_float(v)
-                            if val > 0: 
-                                eps = val
-                                break
-                    if 'BPS' in row_str or '주당순자산' in row_str:
-                        vals = row.iloc[1:].tolist()
-                        for v in reversed(vals):
-                            val = to_float(v)
-                            if val > 0: 
-                                bps = val
-                                break
-                if eps > 0 and bps > 0: break
-        return eps, bps
-    except: return 0, 0
+# --- [과거 금리 추정] ---
+def get_historical_base_rate(date_str):
+    return 3.50
 
-# --- 공포탐욕지수 ---
-def calculate_fear_greed(df):
-    if len(df) < 30: return 50
-    delta = df['Close'].diff()
+# --- [데이터 수집] 휴일 보정 ---
+def get_stock_listing_with_retry(market, date_str, max_retries=5):
+    curr_date = datetime.strptime(date_str, "%Y-%m-%d")
+    for _ in range(max_retries):
+        d_str = curr_date.strftime("%Y-%m-%d")
+        try:
+            df = fdr.StockListing(market, d_str)
+            if not df.empty:
+                return df
+        except: pass
+        curr_date -= timedelta(days=1)
+    return pd.DataFrame()
+
+# --- 3중 데이터 확보 전략 ---
+def get_robust_metrics(code, row):
+    current_price = to_float(row.get('Close', 0))
+    eps = to_float(row.get('EPS', 0))
+    bps = to_float(row.get('BPS', 0))
+    
+    if eps == 0 or bps == 0:
+        try:
+            ticker = yf.Ticker(f"{code}.KS")
+            info = ticker.info
+            if eps == 0 and info.get('trailingEps'): eps = float(info['trailingEps'])
+            if bps == 0 and info.get('bookValue'): bps = float(info['bookValue'])
+        except: pass
+    
+    if current_price > 0:
+        per = to_float(row.get('PER', 0))
+        pbr = to_float(row.get('PBR', 0))
+        if eps == 0 and per > 0: eps = current_price / per
+        if bps == 0 and pbr > 0: bps = current_price / pbr
+        
+    return eps, bps
+
+# --- [핵심 수정] 공포탐욕지수 (주봉 변환 적용) ---
+def calculate_fear_greed_weekly(df_daily):
+    """
+    일봉 데이터를 받아 주봉(Weekly)으로 변환한 뒤 공포지수를 산출합니다.
+    """
+    if df_daily.empty: return 50
+    
+    # 1. 주봉으로 리샘플링 (금요일 기준)
+    # Open은 첫날, High는 최대, Low는 최소, Close는 마지막 날
+    try:
+        df_weekly = df_daily.resample('W-FRI').agg({
+            'Close': 'last'
+        }).dropna()
+    except:
+        return 50
+
+    # 데이터가 너무 적으면(20주 미만) 계산 불가 -> 50점
+    if len(df_weekly) < 20: return 50
+    
+    # 2. 지표 계산 (주봉 기준)
+    # RSI (14주)
+    delta = df_weekly['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     
-    ma20 = df['Close'].rolling(window=20).mean()
-    disparity = (df['Close'] / ma20) * 100
+    # 이격도 (20주 이동평균선)
+    ma20 = df_weekly['Close'].rolling(window=20).mean()
+    disparity = (df_weekly['Close'] / ma20) * 100
+    
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
     
     try:
+        # 가장 최근 주봉의 값 사용
         val = (rsi.iloc[-1] * 0.5) + (disparity_score.iloc[-1] * 0.5)
         return 50 if pd.isna(val) else val
     except: return 50
 
 # --- CSV 저장 ---
-def save_to_csv(data):
-    df = pd.DataFrame(data)
+def save_to_csv_flat(data_list):
+    if not data_list: return
+    df = pd.DataFrame(data_list)
+    new_cols = []
+    for col in df.columns:
+        if isinstance(col, tuple):
+            new_cols.append(f"{col[0]}_{col[1]}")
+        else:
+            new_cols.append(str(col))
+    df.columns = new_cols
+    
     if not os.path.exists(DB_FILE):
         df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
 # --- 분석 실행 ---
-def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar):
+    today = datetime.now()
+    quarters = []
+    temp_date = today
+    for _ in range(8):
+        temp_date = temp_date - timedelta(days=95)
+        q_date_str = temp_date.strftime('%Y-%m-%d')
+        quarters.append(q_date_str)
     
+    status_text.info(f"📅 과거 2년(8개 분기) 데이터를 복원 중입니다...")
+
+    snapshot_dfs = {}
+    try:
+        for i, q_date in enumerate(quarters):
+            status_text.text(f"📥 [{i+1}/8] {q_date} 기준 데이터 확보 중...")
+            df = get_stock_listing_with_retry('KRX', q_date)
+            if not df.empty:
+                snapshot_dfs[q_date] = df.set_index('Code')
+    except Exception as e:
+        st.error(f"데이터 준비 실패: {e}")
+        return
+
     if os.path.exists(DB_FILE): os.remove(DB_FILE)
-    
+
     total = len(target_stocks)
     new_data = []
     
+    # 주봉 생성을 위해 넉넉하게 과거 2년치 데이터를 더 가져옴 (총 4.5년)
+    chart_start = (today - timedelta(days=365*4.5)).strftime('%Y-%m-%d')
+    today_str = today.strftime('%Y-%m-%d')
+
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
@@ -116,79 +169,116 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} 정밀 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 주봉 분석 중...")
         
         try:
             current_price = to_float(row.get('Close', 0))
+            eps_now, bps_now = get_robust_metrics(code, row)
             
-            eps, bps = get_fundamentals(code)
-            if eps == 0: eps = to_float(row.get('EPS', 0))
-            if bps == 0: bps = to_float(row.get('BPS', 0))
+            time.sleep(0.02)
+            df_chart_full = fdr.DataReader(code, chart_start, today_str)
             
-            roe = 0
-            if bps > 0: roe = (eps / bps) * 100
+            # [수정] 주봉 기준 공포지수 산출
+            fg_score_now = 50
+            if not df_chart_full.empty:
+                fg_score_now = calculate_fear_greed_weekly(df_chart_full)
             
-            time.sleep(0.05)
-            fg_score = 50
-            try:
-                df_chart = fdr.DataReader(code, chart_start, today_str)
-                if not df_chart.empty:
-                    fg_score = calculate_fear_greed(df_chart)
-            except: pass
-
-            # V51 로직: 수익가치(7) : 자산가치(3) 가중치 적용
-            earnings_value = 0
-            if applied_rate > 0:
-                earnings_value = eps / (applied_rate / 100)
+            base_rate = applied_rate
+            earnings_val = eps_now / (base_rate/100) if base_rate > 0 else 0
+            base_fair = (earnings_val * 0.7) + (bps_now * 0.3)
+            sentiment = 1 + ((50 - fg_score_now)/50 * 0.1)
+            fair_now = base_fair * sentiment
             
-            asset_value = bps
-            base_fair_price = (earnings_value * 0.7) + (asset_value * 0.3)
-            
-            sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-            fair_price = base_fair_price * sentiment_factor
-            
-            gap = 0
+            gap_now = 0
             if current_price > 0:
-                gap = (fair_price - current_price) / current_price * 100
+                gap_now = (fair_now - current_price) / current_price * 100
             
             data_row = {
-                '종목코드': code,
-                '종목명': name,
-                '현재가': round(current_price, 0),
-                '적정가': round(fair_price, 0),
-                '괴리율': round(gap, 2),
-                '공포지수': round(fg_score, 1),
-                'ROE(%)': round(roe, 2),
-                'EPS': round(eps, 0),
-                'BPS': round(bps, 0)
+                '기본정보_종목코드': code,
+                '기본정보_종목명': name,
+                '현재정보_현재가': round(current_price, 0),
+                '현재정보_적정주가': round(fair_now, 0),
+                '현재정보_괴리율': round(gap_now, 2),
+                '지표_공포지수': round(fg_score_now, 1),
+                '지표_EPS': round(eps_now, 0),
+                '지표_BPS': round(bps_now, 0)
             }
+            
+            for q_date in quarters:
+                q_end_dt = datetime.strptime(q_date, '%Y-%m-%d')
+                q_start_dt = q_end_dt - timedelta(days=90)
+                q_start_str = q_start_dt.strftime('%Y-%m-%d')
+                
+                yyyy = q_end_dt.year
+                mm = q_end_dt.month
+                q_num = (mm - 1) // 3 + 1
+                if q_num == 0: q_num = 4; yyyy -= 1
+                col_group = f"{str(yyyy)[2:]}년{q_num}Q"
+                
+                q_avg_price = 0
+                q_fair = 0
+                
+                if not df_chart_full.empty:
+                    # 해당 시점까지의 데이터 슬라이싱
+                    q_chart = df_chart_full.loc[:q_date]
+                    if not q_chart.empty:
+                        # 분기 평균 주가 (일봉 평균) - 이건 그대로 둠 (가격 확인용)
+                        # 분기 내 가격 흐름은 일봉으로 보는 게 맞음
+                        q_slice_for_price = q_chart.loc[q_start_str:q_date]
+                        if not q_slice_for_price.empty:
+                            q_avg_price = q_slice_for_price['Close'].mean()
+                        
+                        # 스냅샷 데이터
+                        found_snap = None
+                        for snap_date in snapshot_dfs.keys():
+                            diff = abs((datetime.strptime(snap_date, '%Y-%m-%d') - q_end_dt).days)
+                            if diff < 10:
+                                found_snap = snapshot_dfs[snap_date]
+                                break
+                        
+                        if found_snap is not None and code in found_snap.index:
+                            snap_row = found_snap.loc[code]
+                            q_eps, q_bps = get_robust_metrics(code, snap_row)
+                            
+                            # [수정] 과거 시점의 공포지수도 '주봉'으로 계산
+                            q_fg = calculate_fear_greed_weekly(q_chart)
+                            q_rate = get_historical_base_rate(q_date)
+                            
+                            q_earn = q_eps / (q_rate/100)
+                            q_base = (q_earn * 0.7) + (q_bps * 0.3)
+                            q_sent = 1 + ((50 - q_fg)/50 * 0.1)
+                            q_fair = q_base * q_sent
+                
+                data_row[f"{col_group}_평균주가"] = round(q_avg_price, 0)
+                data_row[f"{col_group}_적정주가"] = round(q_fair, 0)
+
             new_data.append(data_row)
             
             if len(new_data) >= 5:
-                save_to_csv(new_data)
+                save_to_csv_flat(new_data)
                 new_data = []
         except: continue
 
-    if new_data: save_to_csv(new_data)
+    if new_data:
+        save_to_csv_flat(new_data)
+            
     progress_bar.empty()
     return True
 
 # --- 메인 UI ---
 
-st.title("⚖️ V51_Fix 수익중심 가치투자 분석기")
+st.title("⚖️ V68 가치투자 분석기 (주봉 심리)")
 
-# [요청 1] 산출식 설명 추가
 with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식**", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("##### 🧮 적정주가 산출식 (수익 7 : 자산 3)")
-        st.latex(r"\text{수익가치} = \frac{\text{EPS}}{\text{한국은행 기준금리}}")
-        st.latex(r"\text{적정가} = [(\text{수익가치} \times 0.7) + (\text{BPS} \times 0.3)] \times \text{심리보정}")
-    
+        st.markdown("##### 🧮 적정주가 (수익 7 : 자산 3)")
+        st.latex(r"\text{적정가} = \left[ \left( \frac{\text{EPS}}{\text{금리}} \times 0.7 \right) + \left( \text{BPS} \times 0.3 \right) \right] \times \text{심리보정}")
+        st.caption("* 금리: 한국은행 기준금리 (약 3.25%)")
     with c2:
-        st.markdown("##### 👻 공포탐욕지수 산출식")
-        st.latex(r"\text{Index} = (\text{RSI}_{14} \times 0.5) + (\text{이격도}_{20} \text{ 점수} \times 0.5)")
-        st.caption("* 공포(0)일 때 적정가 상향, 탐욕(100)일 때 하향")
+        st.markdown("##### 👻 공포탐욕지수 (주봉 기준)")
+        st.latex(r"\text{Index} = (\text{RSI}_{14주} \times 0.5) + (\text{이격도}_{20주} \text{ 점수} \times 0.5)")
+        st.caption("* **주봉(Weekly)** 데이터를 사용하여 중기 추세를 반영합니다.")
 
 st.divider()
 
@@ -199,15 +289,12 @@ mode = st.radio("분석 모드", ["🏆 시가총액 상위", "🔍 종목 검�
 target_stocks = pd.DataFrame()
 
 if mode == "🏆 시가총액 상위":
-    # [요청 2] 슬라이더 오류 해결을 위한 세션 상태 관리
     if 'stock_count' not in st.session_state:
-        st.session_state.stock_count = 200
+        st.session_state.stock_count = 50
 
-    # 슬라이더용 콜백
     def update_from_slider():
         st.session_state.stock_count = st.session_state.slider_key
 
-    # 숫자 입력용 콜백
     def apply_manual_input():
         st.session_state.stock_count = st.session_state.num_key
 
@@ -220,13 +307,11 @@ if mode == "🏆 시가총액 상위":
             on_change=update_from_slider
         )
     with c2:
-        # 입력창은 별도 키(num_key)를 가짐
         st.number_input(
             "직접 입력", 10, 500, 
             key='num_key', 
             value=st.session_state.stock_count
         )
-        # [핵심 수정] on_click으로 값 업데이트 후 rerun으로 화면 갱신
         if st.button("✅ 수치 적용", on_click=apply_manual_input):
             st.rerun()
 
@@ -248,7 +333,7 @@ st.divider()
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     
     if mode == "🏆 시가총액 상위":
-        with st.spinner("리스트 로딩 중..."):
+        with st.spinner("리스트 로딩..."):
             df_krx = fdr.StockListing('KRX')
             df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
             final_target = df_krx.sort_values(by='Marcap', ascending=False).head(st.session_state.stock_count)
@@ -264,17 +349,17 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     bok_rate = get_bok_base_rate()
     applied_rate = bok_rate if bok_rate else 3.25
     
-    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 정밀 분석을 시작합니다...")
+    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 데이터 정밀 분석 시작...")
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    run_analysis_core(final_target, applied_rate, status_box, p_bar)
+    run_history_analysis(final_target, applied_rate, status_box, p_bar)
     
-    status_box.success(f"✅ 분석 완료! (기준금리: {applied_rate}%)")
+    status_box.success(f"✅ 분석 완료!")
 
 # --- 3. 결과 ---
 st.divider()
-st.header("🏆 분석 결과")
+st.header("🏆 히스토리칼 분석 결과")
 
 sort_opt = st.radio("정렬 기준", ["괴리율 높은 순", "ROE 높은 순", "공포지수 낮은 순"], horizontal=True)
 
@@ -283,37 +368,80 @@ if st.button("🔄 결과 새로고침"): st.rerun()
 if os.path.exists(DB_FILE):
     try:
         df = pd.read_csv(DB_FILE)
-        for c in ['현재가', '적정가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']:
-            if c in df.columns: df[c] = df[c].apply(to_float)
-            
-        df = df.drop_duplicates(['종목코드'], keep='last')
-        df = df[df['적정가'] > 0]
         
-        if not df.empty:
-            # 정렬
-            if "괴리율" in sort_opt: df = df.sort_values(by='괴리율', ascending=False)
-            elif "ROE" in sort_opt: df = df.sort_values(by='ROE(%)', ascending=False)
-            else: df = df.sort_values(by='공포지수', ascending=True)
+        numeric_targets = ['현재가', '적정주가', '괴리율', 'EPS', 'BPS', 'ROE', '공포지수', '평균주가', '적정가']
+        for col in df.columns:
+            if any(t in col for t in numeric_targets):
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            df = df.reset_index(drop=True)
-            df.index += 1
-            
-            # UI 고정 및 컬럼 순서
-            df.index.name = "순위"
-            df_display = df.set_index('종목명', append=True)
-            cols = ['현재가', '적정가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
-            
-            top = df.iloc[0]
-            st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | ROE: {top['ROE(%)']}%")
+        if '기본정보_종목코드' in df.columns:
+            df = df.drop_duplicates(['기본정보_종목코드'], keep='last')
+        elif '종목코드' in df.columns:
+             df = df.drop_duplicates(['종목코드'], keep='last')
+        
+        # 정렬
+        sort_col = '현재정보_괴리율'
+        ascending = False
+        if "ROE" in sort_opt: sort_col = '지표_ROE(%)'
+        elif "공포" in sort_opt: 
+            sort_col = '지표_공포지수'
+            ascending = True
+        
+        if sort_col in df.columns:
+            df = df.sort_values(by=sort_col, ascending=ascending)
+        
+        df = df.reset_index(drop=True)
+        df.index += 1
+        df.index.name = "순위"
 
-            st.dataframe(
-                df_display[cols].style.applymap(
-                    lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
-                    subset=['괴리율']
-                ).format("{:,.0f}", subset=['현재가', '적정가', 'EPS', 'BPS']),
-                height=800,
-                use_container_width=True
-            )
-        else: st.warning("결과 데이터가 없습니다.")
-    except: st.error("파일 오류")
+        # MultiIndex 변환
+        if '기본정보_종목명' in df.columns:
+            df_display = df.set_index('기본정보_종목명', append=True)
+        else:
+            df_display = df
+
+        new_cols = []
+        for col in df_display.columns:
+            if "_" in col:
+                parts = col.split("_", 1)
+                new_cols.append((parts[0], parts[1]))
+            else:
+                new_cols.append(("기타", col))
+        
+        df_display.columns = pd.MultiIndex.from_tuples(new_cols)
+        
+        # 컬럼 순서
+        display_cols = [
+            ('현재정보', '현재가'), ('현재정보', '적정주가'), ('현재정보', '괴리율'),
+            ('지표', '공포지수'), ('지표', 'ROE(%)'), ('지표', 'EPS'), ('지표', 'BPS')
+        ]
+        
+        levels = df_display.columns.levels[0]
+        hist_groups = [l for l in levels if '년' in l and 'Q' in l]
+        hist_groups.sort(reverse=True)
+        
+        for q in hist_groups:
+            display_cols.append((q, '평균주가'))
+            display_cols.append((q, '적정주가'))
+            
+        final_cols = [c for c in display_cols if c in df_display.columns]
+        
+        if not df_display.empty:
+            try:
+                top_row = df.iloc[0]
+                t_name = top_row.name[1] if isinstance(top_row.name, tuple) else top_row.name
+                t_gap = top_row.get(('현재정보', '괴리율'), 0)
+                st.info(f"🥇 **1위: {t_name}** | 현재 괴리율: {t_gap}%")
+            except: pass
+
+        st.dataframe(
+            df_display[final_cols].style.applymap(
+                lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
+                subset=[('현재정보', '괴리율')] if ('현재정보', '괴리율') in df_display.columns else []
+            ).format("{:,.0f}", na_rep="-"),
+            height=800,
+            use_container_width=True
+        )
+        
+    except Exception as e: st.error(f"표시 오류: {e}")
 else: st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
