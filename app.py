@@ -5,61 +5,68 @@ import numpy as np
 import os
 import time
 import requests
+import re # [추가] 문자열 검색용 정규식 모듈
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v42.csv"
+DB_FILE = "stock_analysis_v43.csv"
 
-st.set_page_config(page_title="V42 가치투자 분석기", page_icon="📡", layout="wide")
+st.set_page_config(page_title="V43 가치투자 분석기", page_icon="📡", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
     try:
         if pd.isna(val) or val == '' or str(val).strip() == '-': return 0.0
-        return float(str(val).replace(',', '').replace('%', ''))
+        # 쉼표 제거, 퍼센트 제거
+        clean_val = str(val).replace(',', '').replace('%', '')
+        return float(clean_val)
     except: return 0.0
 
-# --- [핵심 수정] 금리 크롤링 엔진 강화 ---
+# --- [핵심 수정] 금리 수집 함수 (정규식 사용) ---
 def get_current_bond_yield():
     """
-    네이버 금융에서 BBB- 회사채 금리를 3단계로 집요하게 찾아냅니다.
+    표 구조에 의존하지 않고, HTML 소스에서 'BBB-' 근처의 숫자를 강제로 추출합니다.
     """
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    url = "https://finance.naver.com/marketindex/interestList.naver"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
     
-    # 시도할 URL 목록 (메인 -> 금리상세)
-    urls = [
-        "https://finance.naver.com/marketindex/",
-        "https://finance.naver.com/marketindex/interestList.naver"
-    ]
-    
-    for url in urls:
-        try:
-            response = requests.get(url, headers=headers, timeout=5)
-            # 인코딩 자동 감지 및 설정 (cp949 or euc-kr)
-            response.encoding = 'cp949' 
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        response.encoding = 'cp949' # 한글 깨짐 방지
+        html = response.text
+        
+        # 1단계: 'BBB-'라는 글자가 포함된 부분 찾기
+        # 네이버 금융 페이지 소스 내에서 "회사채(BBB-)" 이런 텍스트 뒤에 나오는 숫자를 찾음
+        # 패턴: 회사채.*?BBB-.*?<td class="num">([0-9.]+)</td>
+        
+        # 정규식 패턴: "BBB-"가 나오고, 그 뒤에 오는 첫 번째 숫자(실수)를 찾음
+        # 예: 회사채(BBB-) ... 8.50
+        match = re.search(r'BBB-.*?>\s*([0-9]+\.[0-9]+)', html)
+        
+        if match:
+            yield_val = float(match.group(1))
+            return yield_val
             
-            # 테이블 파싱
-            dfs = pd.read_html(response.text)
-            
-            for df in dfs:
-                # 데이터프레임을 문자열로 변환해 '회사채' 키워드 확인
-                if '회사채' in df.to_string() or 'BBB' in df.to_string():
-                    for idx, row in df.iterrows():
-                        # 라벨 컬럼(보통 첫번째)
-                        label = str(row.iloc[0])
-                        
-                        # 'BBB-' 키워드가 포함된 행 찾기
-                        if 'BBB-' in label or ('회사채' in label and 'BBB' in label):
-                            # 보통 두 번째 컬럼이 현재 금리
-                            val = to_float(row.iloc[1])
-                            if val > 0:
+        # 2단계: 만약 위 패턴 실패 시, 테이블 전체에서 'BBB-' 행의 숫자를 찾음
+        # pandas read_html 재시도 (보조 수단)
+        dfs = pd.read_html(response.text)
+        for df in dfs:
+            if 'BBB' in df.to_string():
+                for idx, row in df.iterrows():
+                    line = " ".join(row.astype(str))
+                    if 'BBB-' in line:
+                        # 행 안에 있는 숫자 중 금리처럼 보이는 것(0~20 사이) 추출
+                        for item in row:
+                            val = to_float(item)
+                            if 1.0 < val < 20.0: # 금리 범위를 1~20%로 가정
                                 return val
-        except:
-            continue # 다음 URL 시도
-            
-    return None # 모든 시도 실패
+                                
+        return None
+    except Exception as e:
+        # st.error(f"금리 접속 에러: {e}") # 디버깅용
+        return None
 
-# --- 펀더멘털 크롤링 (기존 유지) ---
+# --- 펀더멘털 크롤링 ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -69,9 +76,18 @@ def get_fundamentals(code):
         url = f"https://finance.naver.com/item/main.naver?code={target_code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=3)
-        dfs = pd.read_html(response.text, encoding='cp949')
         
-        eps, bps = 0.0, 0.0
+        # 정규식으로 빠르게 EPS, BPS 찾기 (속도 향상 및 오류 방지)
+        html = response.text
+        
+        eps = 0.0
+        bps = 0.0
+        
+        # 1. 최근 연간 실적 테이블 찾기 (단순화)
+        # HTML 내에서 "최근 연간 실적" 근처의 데이터를 찾는 것은 복잡하므로
+        # 기존 pandas 방식 유지하되 예외처리 강화
+        dfs = pd.read_html(html, encoding='cp949')
+        
         for df in dfs:
             df_str = df.to_string()
             if 'EPS' in df_str or 'BPS' in df_str:
@@ -143,6 +159,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
         try:
             current_price = to_float(row.get('Close', 0))
             
+            # 1. 펀더멘털
             eps, bps = get_fundamentals(code)
             if eps == 0: eps = to_float(row.get('EPS', 0))
             if bps == 0: bps = to_float(row.get('BPS', 0))
@@ -150,6 +167,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
+            # 2. 공포지수
             time.sleep(0.05)
             fg_score = 50
             try:
@@ -158,9 +176,11 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # S-RIM 계산
-            k = applied_rate / 100
-            target_pbr = max(0.3, roe / applied_rate)
+            # 3. S-RIM 계산
+            # 금리 0이면 방어
+            safe_rate = applied_rate if applied_rate > 0 else 8.0
+            
+            target_pbr = max(0.3, roe / safe_rate)
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
             fair_price = bps * target_pbr * sentiment_factor
             
@@ -192,11 +212,11 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("📡 V42 가치투자 분석기 (금리수집 강화)")
+st.title("📡 V43 가치투자 분석기 (금리수집 최종병기)")
 
 with st.expander("📘 **적정주가 산출 방식 및 금리 안내 (Click)**", expanded=True):
-    st.info("💡 **분석 시작**을 누르면 실시간 금리를 3단계로 정밀 조회합니다.")
-    # 수식 오류 방지를 위해 안전하게 분리
+    st.info("💡 **분석 시작**을 누르면 **네이버 금융의 소스코드**를 직접 분석해 실시간 금리를 가져옵니다.")
+    # 수식 안전하게 표시
     latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{실시간금리}} \times \text{심리보정}"
     st.latex(latex_formula)
 
@@ -231,7 +251,7 @@ if mode == "🏆 시가총액 상위 종목 분석":
         
     if st.button("✅ 위 수치 적용"):
         apply_manual_input()
-        st.session_state.slider_widget = st.session_state.stock_count # 동기화
+        st.session_state.slider_widget = st.session_state.stock_count 
         st.success(f"상위 {st.session_state.stock_count}개 종목으로 설정되었습니다.")
 
 # 모드 2: 검색
@@ -280,7 +300,7 @@ if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_contai
 
     # [금리 크롤링]
     status_box = st.empty()
-    status_box.info("📡 네이버 금융에서 실시간 금리(BBB-) 정밀 조회 중...")
+    status_box.info("📡 네이버 금융에서 실시간 금리(BBB- 회사채) 정밀 조회 중...")
     
     real_rate = get_current_bond_yield()
     applied_rate = 8.0
@@ -289,7 +309,9 @@ if st.button("▶️ 분석 시작 (Start Analysis)", type="primary", use_contai
         applied_rate = real_rate
         status_box.success(f"✅ 조회 성공! 현재 시장 금리 **{applied_rate}%**를 적용합니다.")
     else:
-        status_box.error(f"❌ 실시간 금리 조회 실패! 부득이하게 **기본값 {applied_rate}%**를 적용합니다.")
+        # 실패 시 에러 메시지 + 토스트
+        status_box.error(f"❌ 실시간 금리 조회 최종 실패! (네이버 차단 등). 부득이하게 **기본값 {applied_rate}%**를 적용합니다.")
+        st.toast("⚠️ 금리 조회 실패 -> 기본값 8.0% 적용됨", icon="🚨")
     
     time.sleep(1.5)
     
