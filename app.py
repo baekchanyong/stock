@@ -9,38 +9,54 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v45.csv"
+DB_FILE = "stock_analysis_v47.csv"
 
-st.set_page_config(page_title="V45 실시간 금리 기준 분석기", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="V47 한국은행 금리 기준 분석기", page_icon="🇰🇷", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
     try:
         if pd.isna(val) or val == '' or str(val).strip() == '-': return 0.0
-        return float(str(val).replace(',', '').replace('%', ''))
+        clean_val = str(val).replace(',', '').replace('%', '')
+        return float(clean_val)
     except: return 0.0
 
-# --- [핵심] 실시간 금리 크롤링 (정규식 활용) ---
-def get_realtime_rate():
+# --- [핵심] 한국은행 기준금리 크롤링 ---
+def get_bok_base_rate():
     """
-    네이버 금융에서 'BBB- 회사채 금리'를 가져옵니다.
-    이것을 주식 시장의 '최소 기대수익률(Base Rate)'로 사용합니다.
+    네이버 금융 시장지표에서 '한국은행 기준금리'를 콕 집어 가져옵니다.
     """
-    url = "https://finance.naver.com/marketindex/interestList.naver"
+    url = "https://finance.naver.com/marketindex/"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
         response = requests.get(url, headers=headers, timeout=3)
-        # HTML 내에서 'BBB-' 텍스트 뒤에 나오는 금리 숫자 추출
-        # 예: <td class="num">8.50</td>
-        match = re.search(r'BBB-.*?>\s*([0-9]+\.[0-9]+)', response.text)
+        response.encoding = 'cp949' # 한글 인코딩
+        html = response.text
+        
+        # 정규식: "한국은행 기준금리" 텍스트 뒤에 나오는 숫자(X.XX) 패턴 찾기
+        # HTML 구조상 텍스트 근처에 값이 위치함
+        match = re.search(r'한국은행 기준금리.*?([0-9]{1}\.[0-9]{2})', html, re.DOTALL)
+        
         if match:
             return float(match.group(1))
+        
+        # 실패 시 2차 시도 (테이블 파싱)
+        dfs = pd.read_html(html)
+        for df in dfs:
+            if '기준금리' in df.to_string():
+                for idx, row in df.iterrows():
+                    line = str(row.values)
+                    if '한국은행' in line or '기준금리' in line:
+                        for item in row:
+                            val = to_float(item)
+                            if 0 < val < 10: # 금리는 보통 0~10 사이
+                                return val
         return None
     except:
         return None
 
-# --- 펀더멘털 (EPS, BPS) ---
+# --- 펀더멘털 크롤링 ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -51,7 +67,9 @@ def get_fundamentals(code):
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=2)
         
-        dfs = pd.read_html(response.text, encoding='cp949')
+        # 정규식으로 빠르게 EPS, BPS 추출
+        html = response.text
+        dfs = pd.read_html(html, encoding='cp949')
         
         eps, bps = 0.0, 0.0
         for df in dfs:
@@ -102,8 +120,8 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- 분석 실행 ---
-def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
+# --- 분석 실행 함수 ---
+def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
     chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     
@@ -124,7 +142,6 @@ def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
         try:
             current_price = to_float(row.get('Close', 0))
             
-            # 1. 펀더멘털
             eps, bps = get_fundamentals(code)
             if eps == 0: eps = to_float(row.get('EPS', 0))
             if bps == 0: bps = to_float(row.get('BPS', 0))
@@ -132,7 +149,6 @@ def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            # 2. 공포지수
             time.sleep(0.05)
             fg_score = 50
             try:
@@ -141,17 +157,12 @@ def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # 3. 적정주가 계산 (기준금리 1배수 적용)
-            # 공식: 적정 PBR = ROE / 기준금리
-            # 의미: 내 돈(자본)으로 은행이자(금리)보다 몇 배 더 버느냐? 만큼 쳐준다.
+            # [핵심] 한국은행 기준금리 적용 (S-RIM)
+            # k = 기준금리 (예: 3.5%)
+            # 기준금리가 낮을수록 적정주가는 매우 높게 나옴 (상대평가용)
+            safe_rate = applied_rate if applied_rate > 0 else 3.5
             
-            # 요구수익률 (k) = 기준금리 그대로 사용
-            k = base_rate / 100
-            
-            # 최소 PBR 0.3배 방어 (너무 낮게 나오는 것 방지)
-            target_pbr = max(0.3, roe / base_rate)
-            
-            # 심리 보정
+            target_pbr = max(0.3, roe / safe_rate) # PBR = ROE / 금리
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
             
             fair_price = bps * target_pbr * sentiment_factor
@@ -184,18 +195,16 @@ def run_analysis_core(target_stocks, base_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("⚖️ V45 실시간 금리 기준 가치투자 분석기")
+st.title("🇰🇷 V47 한국은행 금리 기준 분석기")
 
-# 금리 상태 관리
-if 'base_rate' not in st.session_state:
-    st.session_state.base_rate = 8.0 # 초기값
-
-# 금리 설명
-with st.expander("📘 **[필독] 적정주가 산출 원리 (Click)**", expanded=True):
-    # 수식 오류 방지 위해 분리
-    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{기준금리}(1\text{배})} \times \text{심리보정}"
-    
-    st.info("💡 모든 종목에 **실시간 시장 금리(BBB-)**를 똑같이 1배수로 적용하여, 가장 객관적인 가치를 산출합니다.")
+with st.expander("📘 **[필독] 한국은행 기준금리 적용 안내**", expanded=True):
+    st.success("💡 **한국은행 기준금리**를 실시간으로 적용합니다.")
+    st.markdown("""
+    * **주의:** 기준금리(약 3.5%)는 회사채 금리(8~9%)보다 훨씬 낮습니다.
+    * 따라서 **대부분의 종목이 '저평가(적정가 높음)'**로 나올 것입니다.
+    * **절대적인 가격보다는, '괴리율이 가장 높은 순서(상대평가)'로 종목을 선정하세요.**
+    """)
+    latex_formula = r"\text{적정주가} = \text{BPS} \times \frac{\text{ROE}}{\text{한국은행 기준금리}} \times \text{심리보정}"
     st.latex(latex_formula)
 
 st.divider()
@@ -207,6 +216,7 @@ mode = st.radio("분석 모드", ["🏆 시가총액 상위", "🔍 종목 검�
 target_stocks = pd.DataFrame()
 
 if mode == "🏆 시가총액 상위":
+    st.write("📊 **분석할 상위 종목 수 설정**")
     if 'stock_count' not in st.session_state: st.session_state.stock_count = 200
     
     def update_slider(): st.session_state.stock_count = st.session_state.slider_widget
@@ -231,9 +241,9 @@ elif mode == "🔍 종목 검색":
             res = df_krx[df_krx['Name'].str.contains(query, case=False)]
             if res.empty: st.error("검색 결과 없음")
             else:
-                picks = st.multiselect("선택", res['Name'].tolist(), default=res['Name'].tolist()[:5])
+                picks = st.multiselect("종목 선택", res['Name'].tolist(), default=res['Name'].tolist()[:5])
                 target_stocks = res[res['Name'].isin(picks)]
-        except: st.error("오류")
+        except: st.error("오류 발생")
 
 # --- 2. 실행 ---
 st.divider()
@@ -241,9 +251,8 @@ st.header("2. 분석 실행")
 
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     
-    # 대상 확인
     if mode == "🏆 시가총액 상위":
-        with st.spinner("리스트 로딩 중..."):
+        with st.spinner("리스트 로딩..."):
             df_krx = fdr.StockListing('KRX')
             df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
             final_target = df_krx.sort_values(by='Marcap', ascending=False).head(st.session_state.stock_count)
@@ -253,18 +262,18 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
             st.stop()
         final_target = target_stocks
 
-    # [핵심] 금리 조회 및 적용
     status_box = st.empty()
-    status_box.info("📡 실시간 금리(BBB-) 조회 중...")
+    status_box.info("🇰🇷 한국은행 기준금리 조회 중...")
     
-    fetched_rate = get_realtime_rate()
+    # [변경] 한국은행 금리 조회 함수 호출
+    bok_rate = get_bok_base_rate()
     
-    if fetched_rate:
-        applied_rate = fetched_rate
-        status_box.success(f"✅ 금리 조회 성공! **{applied_rate}%**를 기준금리로 적용합니다.")
+    if bok_rate:
+        applied_rate = bok_rate
+        status_box.success(f"✅ 조회 성공! **한국은행 기준금리 {applied_rate}%**를 적용합니다.")
     else:
-        applied_rate = 8.5 # 실패 시 기본값
-        status_box.error(f"❌ 금리 조회 실패. 기본값 **{applied_rate}%**를 적용합니다.")
+        applied_rate = 3.50 # 최근 기준금리 기본값
+        status_box.error(f"❌ 조회 실패. 최근 기준금리인 **{applied_rate}%**를 적용합니다.")
     
     time.sleep(1.5)
     
@@ -277,7 +286,7 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
 st.divider()
 st.header("🏆 분석 결과")
 
-sort_opt = st.radio("정렬 기준", ["괴리율 순", "ROE 순", "공포지수 순"], horizontal=True)
+sort_opt = st.radio("정렬 기준", ["괴리율 높은 순", "ROE 높은 순", "공포지수 낮은 순"], horizontal=True)
 
 if st.button("🔄 결과 새로고침"): st.rerun()
 
@@ -298,7 +307,7 @@ if os.path.exists(DB_FILE):
             df.index += 1
             
             top = df.iloc[0]
-            st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | 적정가: {top['적정주가']:,.0f}원")
+            st.info(f"🥇 **1위: {top['종목명']}** | ROE: {top['ROE(%)']}% | 괴리율: {top['괴리율']}%")
             
             st.dataframe(
                 df[['종목명', '현재가', '적정주가', '괴리율', 'ROE(%)', 'EPS', 'BPS', '공포지수']].style.applymap(
@@ -308,5 +317,5 @@ if os.path.exists(DB_FILE):
                 use_container_width=True, height=600
             )
         else: st.warning("결과 없음")
-    except: st.error("파일 읽기 오류")
+    except: st.error("파일 오류")
 else: st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
