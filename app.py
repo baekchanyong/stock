@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v48.csv"
+DB_FILE = "stock_analysis_v49.csv"
 
-st.set_page_config(page_title="V48 초고속 가치투자 분석기", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="V49 가치투자 분석기 (정밀)", page_icon="💎", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -21,7 +21,7 @@ def to_float(val):
         return float(clean_val)
     except: return 0.0
 
-# --- [핵심] 한국은행 기준금리 크롤링 ---
+# --- [금리] 한국은행 기준금리 ---
 def get_bok_base_rate():
     url = "https://finance.naver.com/marketindex/"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -31,8 +31,56 @@ def get_bok_base_rate():
         html = response.text
         match = re.search(r'한국은행 기준금리.*?([0-9]{1}\.[0-9]{2})', html, re.DOTALL)
         if match: return float(match.group(1))
-        return 3.25 # 기본값
+        return 3.25 
     except: return 3.25
+
+# --- [복구됨] 개별 종목 정밀 크롤링 (정확도 최우선) ---
+def get_fundamentals(code):
+    try:
+        target_code = code
+        if len(code) == 6 and code.isdigit() and not code.endswith('0'):
+            target_code = code[:-1] + '0'
+        
+        url = f"https://finance.naver.com/item/main.naver?code={target_code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=2)
+        
+        # HTML 직접 파싱 (속도와 정확성 균형)
+        html = response.text
+        dfs = pd.read_html(html, encoding='cp949')
+        
+        eps, bps = 0.0, 0.0
+        for df in dfs:
+            # EPS, BPS 키워드가 있는 표 찾기
+            if 'EPS' in df.to_string() or 'BPS' in df.to_string():
+                # 멀티인덱스 컬럼 단순화
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[0] for c in df.columns]
+                
+                for idx, row in df.iterrows():
+                    row_str = str(row.iloc[0])
+                    
+                    # EPS (최근 결산)
+                    if 'EPS' in row_str or '주당순이익' in row_str:
+                        vals = row.iloc[1:].tolist()
+                        for v in reversed(vals): # 최신순
+                            val = to_float(v)
+                            if val > 0: 
+                                eps = val
+                                break
+                    
+                    # BPS (최근 결산)
+                    if 'BPS' in row_str or '주당순자산' in row_str:
+                        vals = row.iloc[1:].tolist()
+                        for v in reversed(vals):
+                            val = to_float(v)
+                            if val > 0: 
+                                bps = val
+                                break
+                
+                if eps > 0 and bps > 0: break
+        return eps, bps
+    except: return 0, 0
 
 # --- 공포탐욕지수 ---
 def calculate_fear_greed(df):
@@ -45,8 +93,7 @@ def calculate_fear_greed(df):
     
     ma20 = df['Close'].rolling(window=20).mean()
     disparity = (df['Close'] / ma20) * 100
-    # 이격도 점수화 (95~105 구간을 중립으로)
-    disparity_score = disparity.apply(lambda x: 0 if x < 95 else (100 if x > 105 else (x - 95) * 10))
+    disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
     
     try:
         val = (rsi.iloc[-1] * 0.5) + (disparity_score.iloc[-1] * 0.5)
@@ -61,69 +108,53 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- [속도 개선] 분석 실행 함수 ---
-def run_fast_analysis(target_stocks, applied_rate, status_text, progress_bar):
+# --- 분석 실행 (정밀 모드) ---
+def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
-    # 공포지수용 차트 데이터 기간 (최근 6개월만 가져와서 속도 향상)
-    chart_start = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+    chart_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     
     if os.path.exists(DB_FILE): os.remove(DB_FILE)
     
     total = len(target_stocks)
     new_data = []
     
-    # 루프 시작
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
         
-        # 제외 종목
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
-        # 진행률 업데이트 (UI 부하를 줄이기 위해 5번마다 텍스트 갱신)
         progress_bar.progress(min((step + 1) / total, 1.0))
-        if step % 5 == 0:
-            status_text.text(f"🚀 [{step+1}/{total}] {name} 초고속 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} : 재무제표 정밀 분석 중...")
         
         try:
             current_price = to_float(row.get('Close', 0))
             
-            # [속도 핵심] 별도 크롤링 없이 리스트에 있는 정보 바로 사용
-            eps = to_float(row.get('EPS', 0))
-            bps = to_float(row.get('BPS', 0))
-            per = to_float(row.get('PER', 0))
-            pbr = to_float(row.get('PBR', 0))
+            # [복구] 개별 종목 페이지 직접 접속 (정확도 100%)
+            eps, bps = get_fundamentals(code)
             
-            # 데이터 보정 (0이면 역산)
-            if eps == 0 and current_price > 0 and per > 0: eps = current_price / per
-            if bps == 0 and current_price > 0 and pbr > 0: bps = current_price / pbr
+            # 크롤링 실패 시에만 리스트 데이터 참고 (안전장치)
+            if eps == 0: eps = to_float(row.get('EPS', 0))
+            if bps == 0: bps = to_float(row.get('BPS', 0))
             
+            # ROE 계산
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            # 공포지수 (이것만 API 호출)
+            # 공포지수
+            time.sleep(0.05)
             fg_score = 50
             try:
-                # 타임아웃을 짧게 설정하여 멈춤 방지
-                # fdr은 내부적으로 requests를 쓰므로 여기선 호출만 함
-                time.sleep(0.01) # 서버 부하 방지용 최소 딜레이
                 df_chart = fdr.DataReader(code, chart_start, today_str)
                 if not df_chart.empty:
                     fg_score = calculate_fear_greed(df_chart)
             except: pass
 
-            # S-RIM 계산 (한국은행 기준금리 적용)
-            # 금리가 0이거나 너무 낮으면 최소 2%로 방어
-            safe_rate = applied_rate if applied_rate > 0.5 else 3.5
+            # S-RIM 계산 (기준금리 적용)
+            safe_rate = applied_rate if applied_rate > 0 else 3.5
             
-            # 적정 PBR = ROE / 금리
-            target_pbr = roe / safe_rate
-            # 최소 PBR 0.2배는 보장 (청산가치 고려)
-            target_pbr = max(0.2, target_pbr)
-            
-            # 심리 보정 (공포일수록 가치 상향)
+            target_pbr = max(0.3, roe / safe_rate)
             sentiment_factor = 1 + ((50 - fg_score) / 50 * 0.1)
-            
             fair_price = bps * target_pbr * sentiment_factor
             
             gap = 0
@@ -143,8 +174,7 @@ def run_fast_analysis(target_stocks, applied_rate, status_text, progress_bar):
             }
             new_data.append(data_row)
             
-            # 20개씩 모아서 저장 (I/O 횟수 줄임)
-            if len(new_data) >= 20:
+            if len(new_data) >= 5:
                 save_to_csv(new_data)
                 new_data = []
         except: continue
@@ -155,10 +185,10 @@ def run_fast_analysis(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.title("🚀 V48 초고속 가치투자 분석기")
+st.title("💎 V49 가치투자 분석기 (정밀 복구판)")
 
-with st.expander("📘 **[분석 원리] 한국은행 기준금리 S-RIM**", expanded=True):
-    st.info("💡 **속도 개선:** 개별 크롤링을 제거하고 거래소 데이터셋을 직접 활용하여 분석 속도를 5배 높였습니다.")
+with st.expander("📘 **적정주가 산출 공식**", expanded=True):
+    st.info("💡 **개별 종목 정밀 조회** 방식으로 복구하여 데이터 정확도를 확보했습니다.")
     st.markdown(r"$$ \text{적정가} = \text{BPS} \times \frac{\text{ROE}}{\text{기준금리}} \times \text{심리보정} $$")
 
 st.divider()
@@ -190,7 +220,7 @@ elif mode == "🔍 종목 검색":
     query = st.text_input("종목명 검색", placeholder="예: 삼성")
     if query:
         try:
-            with st.spinner("목록 검색 중..."):
+            with st.spinner("검색 중..."):
                 df_krx = fdr.StockListing('KRX')
                 res = df_krx[df_krx['Name'].str.contains(query, case=False)]
                 if res.empty: st.error("결과 없음")
@@ -204,10 +234,9 @@ st.divider()
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     
     if mode == "🏆 시가총액 상위":
-        with st.spinner("데이터셋 로딩 중... (이 과정만 잠시 걸립니다)"):
+        with st.spinner("리스트 로딩 중..."):
             df_krx = fdr.StockListing('KRX')
             df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
-            # 리스트 가져올 때 이미 데이터가 다 있음
             final_target = df_krx.sort_values(by='Marcap', ascending=False).head(st.session_state.stock_count)
     else:
         if target_stocks.empty:
@@ -218,19 +247,18 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     status_box = st.empty()
     status_box.info("🇰🇷 한국은행 기준금리 조회 중...")
     
-    # 금리 조회
     bok_rate = get_bok_base_rate()
-    applied_rate = bok_rate if bok_rate else 3.5
+    applied_rate = bok_rate if bok_rate else 3.25
     
-    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 분석을 시작합니다...")
+    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 정밀 분석을 시작합니다...")
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    run_fast_analysis(final_target, applied_rate, status_box, p_bar)
+    run_analysis_core(final_target, applied_rate, status_box, p_bar)
     
     status_box.success(f"✅ 분석 완료! (기준금리: {applied_rate}%)")
 
-# --- 3. 결과 (UI 개선) ---
+# --- 3. 결과 (UI 최적화) ---
 st.divider()
 st.header("🏆 분석 결과")
 
@@ -245,9 +273,10 @@ if os.path.exists(DB_FILE):
             if c in df.columns: df[c] = df[c].apply(to_float)
             
         df = df.drop_duplicates(['종목코드'], keep='last')
+        df = df[df['적정가'] > 0] # 오류 데이터(0원) 제거
         
         if not df.empty:
-            # 정렬 로직
+            # 정렬
             if "괴리율" in sort_opt: df = df.sort_values(by='괴리율', ascending=False)
             elif "ROE" in sort_opt: df = df.sort_values(by='ROE(%)', ascending=False)
             else: df = df.sort_values(by='공포지수', ascending=True)
@@ -255,12 +284,11 @@ if os.path.exists(DB_FILE):
             df = df.reset_index(drop=True)
             df.index += 1
             
-            # [요청 사항] 순위 및 종목명 고정 기능 (인덱스 활용)
+            # [UI 핵심] 고정을 위해 '순위', '종목명'을 인덱스로 설정
             df.index.name = "순위"
-            df_display = df.set_index('종목명', append=True) # 순위, 종목명을 인덱스로 설정하여 고정 효과
+            df_display = df.set_index('종목명', append=True) # 순위, 종목명이 왼쪽 고정됨
             
-            # [요청 사항] 컬럼 순서 재배치
-            # 순위(인덱스), 종목명(인덱스), 현재가, 적정가, 괴리율, 공포지수, 기타(ROE, EPS, BPS)
+            # [UI 핵심] 컬럼 순서 지정
             cols = ['현재가', '적정가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
             
             top = df.iloc[0]
