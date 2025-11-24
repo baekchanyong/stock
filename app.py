@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v53.csv"
+DB_FILE = "stock_analysis_v54.csv"
 
-st.set_page_config(page_title="V53 히스토리칼 밸류에이션 (수정)", page_icon="📚", layout="wide")
+st.set_page_config(page_title="V54 가치투자 분석기 (오류해결)", page_icon="💎", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -36,10 +36,9 @@ def get_bok_base_rate():
 
 # --- [과거 금리 추정] ---
 def get_historical_base_rate(date_str):
-    # 2023~2025년 구간 금리 (약식)
-    return 3.50
+    return 3.50 # 최근 2년 평균
 
-# --- 펀더멘털 정밀 크롤링 ---
+# --- 펀더멘털 정밀 크롤링 (현재용) ---
 def get_fundamentals(code):
     try:
         target_code = code
@@ -86,11 +85,9 @@ def calculate_fear_greed_from_slice(df_slice):
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    
     ma20 = df_slice['Close'].rolling(window=20).mean()
     disparity = (df_slice['Close'] / ma20) * 100
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
-    
     try:
         val = (rsi.iloc[-1] * 0.5) + (disparity_score.iloc[-1] * 0.5)
         return 50 if pd.isna(val) else val
@@ -104,8 +101,8 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- [수정됨] 8분기 히스토리 분석 엔진 ---
-# target_stocks(DataFrame)를 직접 받도록 수정하여 오류 해결
+# --- [수정됨] 분석 실행 함수 ---
+# target_stocks는 이미 DataFrame이므로, 내부에서 다시 head()나 Listing()을 호출하지 않습니다.
 def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar):
     
     today = datetime.now()
@@ -118,13 +115,14 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
         q_date_str = temp_date.strftime('%Y-%m-%d')
         quarters.append(q_date_str)
     
-    status_text.info(f"📅 과거 2년(8개 분기) 데이터를 복원 중입니다... ({quarters[-1]} ~ {quarters[0]})")
+    status_text.info(f"📅 과거 2년(8개 분기)의 EPS/BPS 데이터를 복원 중입니다... (잠시만 기다려주세요)")
 
     # 2. 과거 데이터 스냅샷 로딩 (속도 최적화)
+    # 이 부분은 '종목 리스트'와 무관하게 과거 '시장 데이터'를 가져오는 것이라 유지
     snapshot_dfs = {}
     try:
         for i, q_date in enumerate(quarters):
-            status_text.text(f"📥 [{i+1}/8] 과거 데이터셋 복원 중... ({q_date})")
+            status_text.text(f"📥 [{i+1}/8] 과거({q_date}) 재무 데이터 로딩 중...")
             try:
                 df = fdr.StockListing('KRX', q_date)
                 if not df.empty:
@@ -140,11 +138,12 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
     total = len(target_stocks)
     new_data = []
     
-    # 차트 데이터 시작일 (2.5년 전)
+    # 차트 데이터 시작일
     chart_start = (today - timedelta(days=365*2.5)).strftime('%Y-%m-%d')
     today_str = today.strftime('%Y-%m-%d')
 
     # --- 종목별 루프 ---
+    # target_stocks는 이미 선택된 50개(또는 검색된 종목)의 DataFrame입니다.
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
@@ -163,7 +162,6 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
             if eps_now == 0: eps_now = to_float(row.get('EPS', 0))
             if bps_now == 0: bps_now = to_float(row.get('BPS', 0))
             
-            # 차트 로딩 (한 번만)
             time.sleep(0.02)
             df_chart_full = fdr.DataReader(code, chart_start, today_str)
             
@@ -171,11 +169,10 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
             if not df_chart_full.empty:
                 fg_score_now = calculate_fear_greed_from_slice(df_chart_full.tail(60))
             
-            # 현재 적정가 (수익7:자산3)
+            # 현재 적정가 (하이브리드 모델)
             base_rate = applied_rate
             earnings_val = eps_now / (base_rate/100) if base_rate > 0 else 0
-            asset_val = bps_now
-            base_fair = (earnings_val * 0.7) + (asset_val * 0.3)
+            base_fair = (earnings_val * 0.7) + (bps_now * 0.3)
             sentiment = 1 + ((50 - fg_score_now)/50 * 0.1)
             fair_now = base_fair * sentiment
             
@@ -183,7 +180,6 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
             if current_price > 0:
                 gap_now = (fair_now - current_price) / current_price * 100
                 
-            # 데이터 딕셔너리 시작
             data_row = {
                 '종목코드': code,
                 '종목명': name,
@@ -210,14 +206,14 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                     if not q_chart.empty:
                         q_avg_price = q_chart['Close'].mean()
                         
-                        # 당시 기준 적정주가
+                        # 당시 데이터
                         if q_date in snapshot_dfs and code in snapshot_dfs[q_date].index:
                             snap_row = snapshot_dfs[q_date].loc[code]
                             q_eps = to_float(snap_row.get('EPS', 0))
                             q_bps = to_float(snap_row.get('BPS', 0))
-                            q_price_close = to_float(snap_row.get('Close', 0))
                             
-                            # 역산
+                            # 역산 보정
+                            q_price_close = to_float(snap_row.get('Close', 0))
                             if q_eps == 0 and q_price_close > 0:
                                 q_per = to_float(snap_row.get('PER', 0))
                                 if q_per > 0: q_eps = q_price_close / q_per
@@ -226,8 +222,8 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                                 if q_pbr > 0: q_bps = q_price_close / q_pbr
                             
                             q_fg = calculate_fear_greed_from_slice(q_chart)
-                            
                             q_rate = get_historical_base_rate(q_date)
+                            
                             q_earn_val = q_eps / (q_rate/100)
                             q_base_fair = (q_earn_val * 0.7) + (q_bps * 0.3)
                             q_sent = 1 + ((50 - q_fg)/50 * 0.1)
@@ -237,7 +233,6 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
                 mm = q_end_dt.month
                 q_num = (mm - 1) // 3 + 1
                 if q_num == 0: q_num = 4; yyyy -= 1
-                
                 col_prefix = f"{str(yyyy)[2:]}년{q_num}Q"
                 
                 data_row[f"{col_prefix}_평균주가"] = round(q_avg_price, 0)
@@ -245,7 +240,7 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
 
             new_data.append(data_row)
             
-            if len(new_data) >= 5:
+            if len(new_data) >= 10:
                 save_to_csv(new_data)
                 new_data = []
         except: continue
@@ -256,10 +251,10 @@ def run_history_analysis(target_stocks, applied_rate, status_text, progress_bar)
 
 # --- 메인 UI ---
 
-st.title("📚 V53 히스토리칼 밸류에이션 (오류수정완료)")
+st.title("📚 V54 히스토리칼 밸류에이션 (완결)")
 
-with st.expander("📘 **[분석 원리] 과거 8분기 추적 (Click)**", expanded=True):
-    st.info("💡 **기준금리(약 3.25%)**를 기준으로 현재 및 과거 2년의 적정주가 흐름을 분석합니다.")
+with st.expander("📘 **[분석 원리] 과거 8분기 추적**", expanded=True):
+    st.info("💡 과거 2년 동안의 적정주가 변화와 평균주가 흐름을 한눈에 비교합니다.")
 
 st.divider()
 
@@ -304,10 +299,9 @@ st.divider()
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     
     if mode == "🏆 시가총액 상위":
-        with st.spinner("리스트 로딩..."):
+        with st.spinner("리스트 로딩 중..."):
             df_krx = fdr.StockListing('KRX')
             df_krx = df_krx[df_krx['Market'].isin(['KOSPI'])]
-            # [중요] 여기서 DataFrame을 생성해서 넘겨줍니다.
             final_target = df_krx.sort_values(by='Marcap', ascending=False).head(st.session_state.stock_count)
     else:
         if target_stocks.empty:
@@ -321,11 +315,11 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     bok_rate = get_bok_base_rate()
     applied_rate = bok_rate if bok_rate else 3.25
     
-    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 과거 데이터 복원 및 분석 시작...")
+    status_box.success(f"✅ 기준금리 **{applied_rate}%** 적용 | 데이터 분석을 시작합니다...")
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    # [중요] 수정된 함수에 DataFrame(final_target)을 전달합니다.
+    # [수정 완료] DataFrame을 직접 넘깁니다!
     run_history_analysis(final_target, applied_rate, status_box, p_bar)
     
     status_box.success(f"✅ 분석 완료!")
@@ -341,7 +335,6 @@ if st.button("🔄 결과 새로고침"): st.rerun()
 if os.path.exists(DB_FILE):
     try:
         df = pd.read_csv(DB_FILE)
-        # 숫자 변환
         numeric_cols = ['현재가', '적정가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']
         for c in df.columns:
             if '평균주가' in c or '적정주가' in c or c in numeric_cols:
@@ -358,6 +351,7 @@ if os.path.exists(DB_FILE):
             df = df.reset_index(drop=True)
             df.index += 1
             
+            # UI 고정
             df.index.name = "순위"
             df_display = df.set_index('종목명', append=True)
             
