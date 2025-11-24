@@ -7,9 +7,9 @@ import time
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v33.csv"
+DB_FILE = "stock_analysis_v34.csv"
 
-st.set_page_config(page_title="V33 맞춤형 가치투자 분석기", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="V34 가치투자 분석기", page_icon="🎯", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -45,10 +45,10 @@ def save_to_csv(data):
     else:
         df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-# --- [핵심] 분석 엔진 (기간 가변형) ---
+# --- 분석 엔진 (기간 가변형) ---
 def run_custom_analysis(target_date, period_years, target_num, status_text, progress_bar):
     
-    # 1. 분석할 분기 개수 계산 (1년=4분기)
+    # 분석할 분기 개수 (1년=4분기)
     quarter_count = period_years * 4
     
     dates = []
@@ -62,7 +62,7 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
     status_text.info(f"📅 기준일 [{target_str}]로부터 과거 {period_years}년({quarter_count}분기) 데이터를 분석합니다...")
 
-    # 2. 종목 리스트
+    # 종목 리스트
     try:
         df_main = fdr.StockListing('KRX', target_str)
         df_main = df_main[df_main['Market'].isin(['KOSPI'])]
@@ -107,7 +107,7 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
             historical_fair_prices = []
             
-            # 설정된 분기(quarter_count)만큼 반복
+            # 설정된 분기만큼 반복
             for d in dates:
                 end_dt = datetime.strptime(d, "%Y-%m-%d")
                 start_dt = end_dt - timedelta(days=90)
@@ -167,13 +167,14 @@ def run_custom_analysis(target_date, period_years, target_num, status_text, prog
 
 # --- 메인 UI ---
 
-st.title("🎯 V33 맞춤형 가치투자 분석기")
+st.title("🎯 V34 맞춤형 가치투자 분석기")
 
-with st.expander("📘 **[설명서] 기능 업데이트 안내 (Click)**", expanded=False):
+with st.expander("📘 **[설명서] 기능 사용법 (Click)**", expanded=False):
     st.info("""
-    1. **분석 기간 선택:** 1년~5년 중 원하는 기간을 선택하면, 해당 기간의 분기별 평균 주가로 적정가를 산출합니다.
-    2. **주식 수 입력:** 슬라이더와 입력창이 연동되어 정확한 숫자를 입력할 수 있습니다.
-    3. **검색 및 이동:** 결과 표에서 종목을 검색하면 **노란색으로 강조**되고, 몇 위에 있는지 알려줍니다.
+    1. **분석 기간 선택:** 1년~5년 중 선택 (해당 기간의 분기별 평균 주가로 적정가 산출)
+    2. **주식 수 설정:** - 슬라이더를 움직이거나, 
+       - 숫자 입력 후 **[적용]** 버튼을 누르면 됩니다.
+    3. **검색:** 결과 표 위에서 종목명을 입력하고 Enter를 치면 위치를 찾아줍니다.
     """)
 
 st.divider()
@@ -181,35 +182,47 @@ st.divider()
 # --- 1. 설정 영역 ---
 st.header("1. 분석 조건 설정")
 
-# 날짜 선택
+# 날짜 & 기간 선택
 col_date, col_years = st.columns([2, 1])
 with col_date:
     target_date = st.date_input("📅 분석 기준일", value=datetime.now(), min_value=datetime(2016, 1, 1), max_value=datetime.now())
 with col_years:
-    # [요청 1] 분석 기간 선택 (1~5년)
-    period_years = st.selectbox("⏳ 분석 기간 (년)", [1, 2, 3, 4, 5], index=4, help="선택한 기간만큼의 과거 데이터를 평균 내어 적정주가를 계산합니다.")
+    period_years = st.selectbox("⏳ 분석 기간 (년)", [1, 2, 3, 4, 5], index=4)
 
-# [요청 2] 주식 수 입력 (슬라이더 + 숫자입력 연동)
-if 'stock_count' not in st.session_state:
-    st.session_state.stock_count = 200
+# [핵심 수정] 주식 수 입력 (슬라이더 + 수동입력 + 적용버튼)
+st.write("📊 **분석할 종목 수 설정**")
+
+# 세션 상태 초기화
+if 'target_count' not in st.session_state:
+    st.session_state.target_count = 200
 
 def update_slider():
-    st.session_state.stock_count = st.session_state.num_input
+    st.session_state.target_count = st.session_state.slider_widget
 
-def update_num():
-    st.session_state.stock_count = st.session_state.slider_input
+# 1. 슬라이더 (바로 반영)
+st.slider(
+    "슬라이더로 조절", 10, 300, 
+    key='slider_widget', 
+    value=st.session_state.target_count, 
+    on_change=update_slider
+)
 
-col_slide, col_num = st.columns([3, 1])
-with col_slide:
-    st.slider("분석 종목 수 (Slider)", 10, 300, key='slider_input', on_change=update_num, value=st.session_state.stock_count)
-with col_num:
-    st.number_input("입력 (Number)", 10, 300, key='num_input', on_change=update_slider, value=st.session_state.stock_count)
+# 2. 숫자 입력 + 버튼 (버튼 눌러야 반영)
+c_input, c_btn = st.columns([3, 1])
+with c_input:
+    # 입력창은 독립적으로 동작하도록 key 분리
+    manual_val = st.number_input("직접 입력 (숫자)", 10, 500, value=st.session_state.target_count)
+with c_btn:
+    if st.button("✅ 수치 적용"):
+        st.session_state.target_count = manual_val
+        st.rerun() # 화면 새로고침하여 슬라이더와 동기화
 
 # 분석 시작 버튼
+st.markdown("---")
 if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width=True):
     status_box = st.empty()
     p_bar = st.progress(0)
-    is_done = run_custom_analysis(target_date, period_years, st.session_state.stock_count, status_box, p_bar)
+    is_done = run_custom_analysis(target_date, period_years, st.session_state.target_count, status_box, p_bar)
     if is_done:
         status_box.success(f"✅ 분석 완료! ({period_years}년치 데이터 반영)")
 
@@ -228,7 +241,6 @@ with col_sort:
     )
 
 with col_search:
-    # [요청 3] 검색 기능
     search_term = st.text_input("🔍 종목 검색 (Enter)", placeholder="종목명 입력")
 
 if st.button("🔄 결과 표 새로고침"): st.rerun()
@@ -255,35 +267,27 @@ if os.path.exists(DB_FILE):
             df_res.index += 1
             df_res.index.name = "순번"
             
-            # 검색 로직 (하이라이트 & 위치 알림)
-            search_idx = None
+            # 검색 로직
             if search_term:
-                # 종목명에 검색어가 포함된 행 찾기
                 matches = df_res[df_res['종목명'].str.contains(search_term, na=False)]
                 if not matches.empty:
                     match_row = matches.iloc[0]
-                    search_idx = match_row.name # 순번 (Index)
-                    st.success(f"🔎 **'{match_row['종목명']}'**을(를) 찾았습니다! 현재 **{search_idx}위**에 있습니다.")
+                    st.success(f"🔎 **'{match_row['종목명']}'** 찾음! 현재 **{match_row.name}위**")
                 else:
                     st.error("❌ 해당 종목을 찾을 수 없습니다.")
 
-            # 스타일링 함수 (검색어 강조)
+            # 스타일링 함수
             def highlight_search(row):
                 styles = [''] * len(row)
-                # 검색된 행이면 노란색 배경
                 if search_term and search_term in str(row['종목명']):
                     return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid orange;'] * len(row)
                 
-                # 기존 스타일 (괴리율 색상)
                 if row.name == '괴리율':
                     val = row['괴리율']
                     if val > 20: return 'color: red; font-weight: bold;'
                     elif val < 0: return 'color: blue;'
-                
                 return styles
 
-            # 데이터프레임 표시
-            # 검색된 행 전체 강조를 위해 apply(axis=1) 사용
             st.dataframe(
                 df_res[['기준일', '종목명', '기준일가격', '현재가격', '차이금액', '평균적정주가', '괴리율', '최근공포지수']].style.apply(
                     highlight_search, axis=1
