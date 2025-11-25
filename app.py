@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-DB_FILE = "stock_analysis_v52.csv"
+# 파일 저장 기능 제거로 DB_FILE 설정 삭제
 
-st.set_page_config(page_title="V52 가치투자 분석기 (주봉심리)", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="V53 가치투자 분석기", page_icon="⚖️", layout="wide")
 
 # --- 헬퍼 함수 ---
 def to_float(val):
@@ -73,25 +73,18 @@ def get_fundamentals(code):
         return eps, bps
     except: return 0, 0
 
-# --- [핵심 수정] 공포탐욕지수 (주봉 변환) ---
+# --- [V52 유지] 공포탐욕지수 (주봉 변환) ---
 def calculate_fear_greed_weekly(df_daily):
-    """
-    일봉 데이터를 받아 주봉(Weekly)으로 변환한 뒤 공포지수를 산출합니다.
-    """
     if df_daily.empty: return 50
     
-    # 1. 주봉으로 리샘플링 (금요일 기준)
     try:
         df_weekly = df_daily.resample('W-FRI').agg({
             'Close': 'last'
         }).dropna()
-    except:
-        return 50
+    except: return 50
 
-    # 데이터가 너무 적으면(20주 미만) 계산 불가
     if len(df_weekly) < 20: return 50
     
-    # 2. 지표 계산 (주봉 기준 14주, 20주)
     delta = df_weekly['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -100,7 +93,6 @@ def calculate_fear_greed_weekly(df_daily):
     
     ma20 = df_weekly['Close'].rolling(window=20).mean()
     disparity = (df_weekly['Close'] / ma20) * 100
-    
     disparity_score = disparity.apply(lambda x: 0 if x < 90 else (100 if x > 110 else (x - 90) * 5))
     
     try:
@@ -108,33 +100,28 @@ def calculate_fear_greed_weekly(df_daily):
         return 50 if pd.isna(val) else val
     except: return 50
 
-# --- CSV 저장 ---
-def save_to_csv(data):
-    df = pd.DataFrame(data)
-    if not os.path.exists(DB_FILE):
-        df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
-    else:
-        df.to_csv(DB_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
-
-# --- 분석 실행 ---
+# --- 분석 실행 (메모리 저장 방식) ---
 def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
-    # 주봉 계산을 위해 넉넉하게 2년치 데이터 확보
     chart_start = (datetime.now() - timedelta(days=365*2)).strftime('%Y-%m-%d')
     
-    if os.path.exists(DB_FILE): os.remove(DB_FILE)
-    
     total = len(target_stocks)
-    new_data = []
+    results = [] # 결과를 담을 리스트 (파일 대신 메모리 사용)
     
+    # 인덱스 리셋하여 순회
+    target_stocks = target_stocks.reset_index(drop=True)
+
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
         
+        # 시가총액 순위 (입력된 리스트가 이미 시총순 정렬 상태라고 가정)
+        marcap_rank = step + 1
+
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
         progress_bar.progress(min((step + 1) / total, 1.0))
-        status_text.text(f"⏳ [{step+1}/{total}] {name} 정밀 분석 중...")
+        status_text.text(f"⏳ [{step+1}/{total}] {name} 분석 중...")
         
         try:
             current_price = to_float(row.get('Close', 0))
@@ -147,16 +134,15 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
             roe = 0
             if bps > 0: roe = (eps / bps) * 100
             
-            time.sleep(0.02) # 서버 부하 방지
+            time.sleep(0.02)
             fg_score = 50
             try:
                 df_chart = fdr.DataReader(code, chart_start, today_str)
                 if not df_chart.empty:
-                    # [수정] 주봉 기준 공포지수 사용
                     fg_score = calculate_fear_greed_weekly(df_chart)
             except: pass
 
-            # V51 로직 유지: 수익가치(7) : 자산가치(3)
+            # V52 로직: 수익가치(7) : 자산가치(3)
             earnings_value = 0
             if applied_rate > 0:
                 earnings_value = eps / (applied_rate / 100)
@@ -171,33 +157,34 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
             if current_price > 0:
                 gap = (fair_price - current_price) / current_price * 100
             
-            data_row = {
+            # 결과 리스트에 추가 (JSON/CSV 저장 안함)
+            results.append({
                 '종목코드': code,
                 '종목명': name,
+                '시총순위': marcap_rank, # [New] 시가총액 순위
                 '현재가': round(current_price, 0),
-                '적정가': round(fair_price, 0),
+                '적정주가': round(fair_price, 0),
                 '괴리율': round(gap, 2),
                 '공포지수': round(fg_score, 1),
                 'ROE(%)': round(roe, 2),
                 'EPS': round(eps, 0),
                 'BPS': round(bps, 0)
-            }
-            new_data.append(data_row)
+            })
             
-            if len(new_data) >= 5:
-                save_to_csv(new_data)
-                new_data = []
         except: continue
 
-    if new_data: save_to_csv(new_data)
     progress_bar.empty()
-    return True
+    
+    # 분석 완료 후 세션 스테이트에 저장
+    if results:
+        st.session_state['analysis_result'] = pd.DataFrame(results)
+        return True
+    return False
 
 # --- 메인 UI ---
 
-st.title("⚖️ V52 수익중심 가치투자 분석기 (주봉심리)")
+st.title("⚖️ V53 가치투자 분석기")
 
-# 설명서
 with st.expander("📘 **[필독] 적정주가 & 공포지수 산출 공식**", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
@@ -220,7 +207,7 @@ target_stocks = pd.DataFrame()
 
 if mode == "🏆 시가총액 상위":
     if 'stock_count' not in st.session_state:
-        st.session_state.stock_count = 200
+        st.session_state.stock_count = 50
 
     def update_from_slider():
         st.session_state.stock_count = st.session_state.slider_key
@@ -283,9 +270,13 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    run_analysis_core(final_target, applied_rate, status_box, p_bar)
+    # 실행 후 결과는 세션 스테이트에 저장됨
+    success = run_analysis_core(final_target, applied_rate, status_box, p_bar)
     
-    status_box.success(f"✅ 분석 완료!")
+    if success:
+        status_box.success(f"✅ 분석 완료!")
+        time.sleep(0.5)
+        st.rerun() # 화면 갱신
 
 # --- 3. 결과 ---
 st.divider()
@@ -295,40 +286,50 @@ sort_opt = st.radio("정렬 기준", ["괴리율 높은 순", "ROE 높은 순", 
 
 if st.button("🔄 결과 새로고침"): st.rerun()
 
-if os.path.exists(DB_FILE):
-    try:
-        df = pd.read_csv(DB_FILE)
-        for c in ['현재가', '적정가', '괴리율', 'EPS', 'BPS', 'ROE(%)', '공포지수']:
-            if c in df.columns: df[c] = df[c].apply(to_float)
-            
-        df = df.drop_duplicates(['종목코드'], keep='last')
-        df = df[df['적정가'] > 0]
-        
-        if not df.empty:
-            # 정렬
-            if "괴리율" in sort_opt: df = df.sort_values(by='괴리율', ascending=False)
-            elif "ROE" in sort_opt: df = df.sort_values(by='ROE(%)', ascending=False)
-            else: df = df.sort_values(by='공포지수', ascending=True)
-            
-            df = df.reset_index(drop=True)
-            df.index += 1
-            
-            # UI 고정 및 컬럼 순서
-            df.index.name = "순위"
-            df_display = df.set_index('종목명', append=True)
-            cols = ['현재가', '적정가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
-            
-            top = df.iloc[0]
-            st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | ROE: {top['ROE(%)']}%")
+# 세션 스테이트에서 데이터 확인
+if 'analysis_result' in st.session_state and not st.session_state['analysis_result'].empty:
+    df = st.session_state['analysis_result']
+    
+    # 정렬
+    if "괴리율" in sort_opt: df = df.sort_values(by='괴리율', ascending=False)
+    elif "ROE" in sort_opt: df = df.sort_values(by='ROE(%)', ascending=False)
+    else: df = df.sort_values(by='공포지수', ascending=True)
+    
+    df = df.reset_index(drop=True)
+    df.index += 1
+    
+    # UI 설정
+    df.index.name = "순위"
+    
+    # [New] 시총순위 컬럼을 종목명 옆으로 배치
+    cols = ['시총순위', '현재가', '적정주가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
+    
+    # 종목명 인덱스 설정 (고정)
+    df_display = df.set_index('종목명', append=True)
+    
+    top = df.iloc[0]
+    st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}% | ROE: {top['ROE(%)']}%")
 
-            st.dataframe(
-                df_display[cols].style.applymap(
-                    lambda x: 'color: red; font-weight: bold;' if x > 20 else ('color: blue;' if x < 0 else 'color: black;'), 
-                    subset=['괴리율']
-                ).format("{:,.0f}", subset=['현재가', '적정가', 'EPS', 'BPS']),
-                height=800,
-                use_container_width=True
-            )
-        else: st.warning("결과 데이터가 없습니다.")
-    except: st.error("파일 오류")
-else: st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+    # [New] 스타일 적용 함수 (파스텔톤)
+    def style_dataframe(row):
+        color = '#BAA4D3' # 기본 파스텔 보라
+        weight = 'normal'
+        
+        val = row['괴리율']
+        if val > 20:
+            color = '#D47C94' # 파스텔 레드
+            weight = 'bold'
+        elif val < 0:
+            color = '#ABC4FF' # 파스텔 블루
+            weight = 'bold'
+            
+        # 괴리율 컬럼에만 색상 적용
+        return [f'color: {color}; font-weight: {weight}' if col == '괴리율' else '' for col in row.index]
+
+    st.dataframe(
+        df_display[cols].style.apply(style_dataframe, axis=1).format("{:,.0f}", subset=['현재가', '적정주가', 'EPS', 'BPS']),
+        height=800,
+        use_container_width=True
+    )
+else:
+    st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
