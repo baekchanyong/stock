@@ -1,4 +1,3 @@
-
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
@@ -184,7 +183,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-st.markdown("<div class='responsive-header'>⚖️ V56 가치투자 분석기</div>", unsafe_allow_html=True)
+st.markdown("<div class='responsive-header'>⚖️ KOSPI 분석기_1.0Ver</div>", unsafe_allow_html=True)
 
 with st.expander("📘 **산출 공식 및 원리**", expanded=True):
     st.markdown("""
@@ -340,3 +339,4 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
