@@ -208,10 +208,11 @@ with st.expander("📘 **산출 공식 및 원리**", expanded=True):
     <b>1. 적정주가 (수익중심 모델)</b><br>
     &nbsp; • <b>수익가치(70%):</b> (EPS ÷ 한국은행 기준금리)<br>
     &nbsp; • <b>자산가치(30%):</b> BPS<br>
-    &nbsp; • <b>최종:</b> (수익가치×0.7 + 자산가치×0.3) × 심리보정<br><br>
+    &nbsp; • <b>최종:</b> (수익가치×0.7 + 자산가치×0.3) × 심리보정계수<br><br>
     
     <b>2. 공포탐욕지수 (주봉 기준)</b><br>
     &nbsp; • <b>구성:</b> RSI(14주) 50% + 이격도(20주) 50%<br>
+    \text{심리 계수} = 1 + \left( \frac{50 - \text{공포지수}}{50} \times 0.1 \right) 
     &nbsp; • <b>해석:</b> 30점 이하(공포/매수), 70점 이상(탐욕/매도)
     </div>
     """, unsafe_allow_html=True)
@@ -356,6 +357,7 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
 
 
 
