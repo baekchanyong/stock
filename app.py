@@ -239,7 +239,7 @@ def run_analysis_parallel(target_list, applied_rate, status_text, progress_bar, 
 st.markdown("<div class='responsive-header'>⚖️ KOSPI 분석기 1.0Ver</div>", unsafe_allow_html=True)
 
 # 1. 설명서
-with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
+with st.expander("📘 **공지사항**", expanded=True):
     st.markdown("""
     <div class='info-text'>
 
@@ -272,6 +272,7 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     <b>(25.11.26) 1.0Ver : 최초배포</b><br>
     &nbsp; • 분석 제외종목 : 맥쿼리인프라, SK리츠, 제이알글로벌리츠, 롯데리츠, ESR켄달스퀘어리츠, 신한알파리츠, 맵스리얼티1, 이리츠코크렙, 코람코에너지리츠<br>
     &nbsp;   - 일반제조업과 회계방식차이로 인하여 과도하게 저평가되는 종목들 제외<br>
+    &nbsp; • 시총순위 : ETF(KODEX200 등) 제외한 시가총액 순위<br>
     </div>
     """, unsafe_allow_html=True)
 
@@ -440,3 +441,4 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
