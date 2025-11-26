@@ -1,3 +1,4 @@
+
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
@@ -9,34 +10,17 @@ import re
 from datetime import datetime, timedelta
 
 # --- 설정 ---
-# 파일 저장 없음 (메모리 사용)
+# 메모리 저장 방식 사용 (DB_FILE 없음)
 
-st.set_page_config(page_title="V54 가치투자 분석기", page_icon="📱", layout="wide")
+st.set_page_config(page_title="KOSPI 분석기_1.0Ver", page_icon="🎨", layout="wide")
 
-# --- [CSS] 모바일 최적화 스타일 적용 ---
+# --- [CSS] 모바일 최적화 ---
 st.markdown("""
 <style>
-    /* 타이틀 반응형 크기 조정 */
-    .responsive-header {
-        font-size: 2.2rem;
-        font-weight: 700;
-        margin-bottom: 1rem;
-    }
-    @media (max-width: 600px) {
-        .responsive-header {
-            font-size: 1.5rem; /* 모바일에서는 작게 */
-        }
-    }
-    /* 설명 텍스트 크기 및 줄간격 조정 */
-    .info-text {
-        font-size: 1rem;
-        line-height: 1.6;
-    }
-    @media (max-width: 600px) {
-        .info-text {
-            font-size: 0.9rem;
-        }
-    }
+    .responsive-header { font-size: 2.2rem; font-weight: 700; margin-bottom: 1rem; }
+    @media (max-width: 600px) { .responsive-header { font-size: 1.5rem; } }
+    .info-text { font-size: 1rem; line-height: 1.6; }
+    @media (max-width: 600px) { .info-text { font-size: 0.9rem; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -103,7 +87,6 @@ def get_fundamentals(code):
 # --- 공포탐욕지수 (주봉 기준) ---
 def calculate_fear_greed_weekly(df_daily):
     if df_daily.empty: return 50
-    
     try:
         df_weekly = df_daily.resample('W-FRI').agg({'Close': 'last'}).dropna()
     except: return 50
@@ -125,7 +108,7 @@ def calculate_fear_greed_weekly(df_daily):
         return 50 if pd.isna(val) else val
     except: return 50
 
-# --- 분석 실행 (메모리 저장) ---
+# --- 분석 실행 ---
 def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     today_str = datetime.now().strftime('%Y-%m-%d')
     chart_start = (datetime.now() - timedelta(days=365*2)).strftime('%Y-%m-%d')
@@ -137,7 +120,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
     for step, (idx, row) in enumerate(target_stocks.iterrows()):
         code = str(row['Code'])
         name = row['Name']
-        marcap_rank = step + 1
+        marcap_rank = step + 1 # 시총 순위
 
         if name in ["맥쿼리인프라", "SK리츠"]: continue
         
@@ -162,7 +145,7 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
                     fg_score = calculate_fear_greed_weekly(df_chart)
             except: pass
 
-            # 수익7:자산3 모델
+            # V51 로직: 수익가치(7) : 자산가치(3)
             earnings_value = 0
             if applied_rate > 0:
                 earnings_value = eps / (applied_rate / 100)
@@ -201,11 +184,9 @@ def run_analysis_core(target_stocks, applied_rate, status_text, progress_bar):
 
 # --- 메인 UI ---
 
-# [수정] 타이틀 반응형 적용
-st.markdown("<div class='responsive-header'>⚖️ V54 가치투자 분석기</div>", unsafe_allow_html=True)
+st.markdown("<div class='responsive-header'>⚖️ V56 가치투자 분석기</div>", unsafe_allow_html=True)
 
-# [수정] 설명서 모바일 최적화 (수식 -> 텍스트 변환)
-with st.expander("📘 **[필독] 산출 공식 및 원리**", expanded=True):
+with st.expander("📘 **산출 공식 및 원리**", expanded=True):
     st.markdown("""
     <div class='info-text'>
     <b>1. 적정주가 (수익중심 모델)</b><br>
@@ -215,7 +196,7 @@ with st.expander("📘 **[필독] 산출 공식 및 원리**", expanded=True):
     
     <b>2. 공포탐욕지수 (주봉 기준)</b><br>
     &nbsp; • <b>구성:</b> RSI(14주) 50% + 이격도(20주) 50%<br>
-    &nbsp; • <b>해석:</b> 0점에 가까울수록 공포(저점 매수 기회)
+    &nbsp; • <b>해석:</b> 30점 이하(공포/매수), 70점 이상(탐욕/매도)
     </div>
     """, unsafe_allow_html=True)
 
@@ -228,7 +209,6 @@ mode = st.radio("분석 모드", ["🏆 시가총액 상위", "🔍 종목 검�
 target_stocks = pd.DataFrame()
 
 if mode == "🏆 시가총액 상위":
-    # [수정] 기본값 200, 최대값 400으로 변경
     if 'stock_count' not in st.session_state:
         st.session_state.stock_count = 200
 
@@ -240,18 +220,9 @@ if mode == "🏆 시가총액 상위":
 
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.slider(
-            "종목 수 조절", 10, 400, 
-            key='slider_key', 
-            value=st.session_state.stock_count, 
-            on_change=update_from_slider
-        )
+        st.slider("종목 수 조절", 10, 400, key='slider_key', value=st.session_state.stock_count, on_change=update_from_slider)
     with c2:
-        st.number_input(
-            "직접 입력", 10, 400, 
-            key='num_key', 
-            value=st.session_state.stock_count
-        )
+        st.number_input("직접 입력", 10, 400, key='num_key', value=st.session_state.stock_count)
         if st.button("✅ 수치 적용", on_click=apply_manual_input):
             st.rerun()
 
@@ -293,9 +264,9 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    is_success = run_analysis_core(final_target, applied_rate, status_box, p_bar)
+    success = run_analysis_core(final_target, applied_rate, status_box, p_bar)
     
-    if is_success:
+    if success:
         status_box.success(f"✅ 분석 완료!")
         time.sleep(0.5)
         st.rerun()
@@ -319,27 +290,48 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     df.index += 1
     df.index.name = "순위"
     
-    # 시총순위 포함
     cols = ['시총순위', '현재가', '적정주가', '괴리율', '공포지수', 'ROE(%)', 'EPS', 'BPS']
     df_display = df.set_index('종목명', append=True)
     
     top = df.iloc[0]
-    st.info(f"🥇 **1위: {top['종목명']}** | 괴리율: {top['괴리율']}%")
+    st.info(f"🥇 **1위: {top['종목명']}** (시총 {top['시총순위']}위) | 괴리율: {top['괴리율']}%")
 
-    # 파스텔톤 스타일 적용
+    # [핵심 수정] 스타일링 범위 제한
     def style_dataframe(row):
-        color = '#BAA4D3' 
-        weight = 'normal'
-        
-        val = row['괴리율']
-        if val > 20:
-            color = '#D47C94' # 파스텔 레드
-            weight = 'bold'
-        elif val < 0:
-            color = '#ABC4FF' # 파스텔 블루
-            weight = 'bold'
+        styles = []
+        for col in row.index:
+            # 기본값: 색상 없음 (테마 기본색 사용)
+            color = '' 
+            weight = ''
             
-        return [f'color: {color}; font-weight: {weight}' if col == '괴리율' else '' for col in row.index]
+            # 1. 괴리율 컬럼
+            if col == '괴리율':
+                val = row['괴리율']
+                if val > 20:
+                    color = 'color: #D47C94;' # 파스텔 레드
+                    weight = 'font-weight: bold;'
+                elif val < 0:
+                    color = 'color: #ABC4FF;' # 파스텔 블루
+                    weight = 'font-weight: bold;'
+                else:
+                    color = 'color: #BAA4D3;' # 파스텔 퍼플 (중간)
+            
+            # 2. 공포지수 컬럼
+            elif col == '공포지수':
+                val = row['공포지수']
+                if val <= 30:
+                    color = 'color: #D47C94;' # 파스텔 레드 (공포/매수)
+                    weight = 'font-weight: bold;'
+                elif val >= 70:
+                    color = 'color: #ABC4FF;' # 파스텔 블루 (탐욕/매도)
+                    weight = 'font-weight: bold;'
+                else:
+                    color = 'color: #BAA4D3;' # 파스텔 퍼플 (중립)
+            
+            # 나머지 컬럼은 스타일 적용 X (빈 문자열)
+            styles.append(f'{color} {weight}')
+            
+        return styles
 
     st.dataframe(
         df_display[cols].style.apply(style_dataframe, axis=1).format("{:,.0f}", subset=['현재가', '적정주가', 'EPS', 'BPS']),
