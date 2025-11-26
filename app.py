@@ -256,11 +256,11 @@ with st.expander("📘 **공지사항**", expanded=True):
     
     <b>2. 공포탐욕지수 (주봉 기준)</b><br>
     &nbsp; • <b> RSI(14주) </b> 50% + <b> 이격도(20주) </b> 50%<br>
-    &nbsp; • <b> 30점 이하 </b> (공포/매수), <b>70점 이상 </b> (탐욕/매도)<br><br>
+    &nbsp; - <b> 30점 이하 </b> (공포/매수), <b>70점 이상 </b> (탐욕/매도)<br><br>
 
     <b>3. 심리보정 수식</b><br>
     &nbsp; • <b>공식:</b> 1 + ((50 - 공포지수) ÷ 50 × 0.1)<br>
-    &nbsp; • <b>원리:</b> 공포 구간일수록 적정주가를 높게, 탐욕 구간일수록 낮게 보정
+    &nbsp; - 공포 구간일수록 적정주가를 높게, 탐욕 구간일수록 낮게 보정
     </div>
     """, unsafe_allow_html=True)
 
@@ -441,6 +441,7 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
 
 
 
