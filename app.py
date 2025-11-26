@@ -230,7 +230,7 @@ with st.expander("📘 **공지사항**", expanded=True):
     <div class='info-text'>
 
     <span class='pastel-blue'>공지사항</span><br>
-    <span class='pastel-red'># 적정주가는 절대적인 값보다, 상대적으로 봐야됨</span><br>
+    <span class='pastel-red'># 적정주가: 절대적인 값보다, 상대적으로 봐야됨</span><br>
     <span class='pastel-red'># 괴리율 높고,공포지수 낮을수록 매수대상으로 판단</span><br>
     <br><br>
 
@@ -257,7 +257,7 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     
     <b>(25.11.26) 1.0Ver : 최초배포</b><br>
     &nbsp; • 분석 제외종목 추가: 맥쿼리인프라, SK리츠, 제이알글로벌리츠, 롯데리츠, ESR켄달스퀘어리츠, 신한알파리츠, 맵스리얼티1, 이리츠코크렙, 코람코에너지리츠 <br>
-    &nbsp; (일반제조업과 성격이 달라서 적정주가 산출시 저평가로 산출됨)
+    &nbsp; • 사유 : 일반제조업과 성격이 달라서 적정주가 산출시 저평가로 산출됨
     </div>
     """, unsafe_allow_html=True)
 
@@ -414,3 +414,4 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
