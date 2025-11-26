@@ -22,7 +22,7 @@ if password_input != my_password:
     st.error("비밀번호를 입력하고 엔터를 누르면 실행됩니다.")
     st.stop()
 
-st.write("🎉 Made By 찬옹")
+st.write("🎉 Made By 찬용")
 # --- [비밀번호 설정 구간 끝] ---
 
 
@@ -222,8 +222,8 @@ with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
     <div class='info-text'>
 
     <span class='pastel-blue'>공지사항</span><br>
-    <span class='pastel-red'># 적정주가는 절대적으로 보기보다, 상대적으로 봐야됨</span><br><br>
-    <span class='pastel-red'># 괴리율 높고,ROE 높고, 공포지수 낮을수록 매수대상으로 판단</span><br><br>
+    <span class='pastel-red'># 적정주가는 절대적인 값보다, 상대적으로 봐야됨</span><br><br>
+    <span class='pastel-red'># 괴리율 높고,공포지수 낮을수록 매수대상으로 판단</span><br><br>
 
     
     <b>1. 적정주가 (수익중심 모델)</b><br>
@@ -246,7 +246,8 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     st.markdown("""
     <div class='info-text'>
     
-    <b>20.11.26 최초배포 1.0Ver</b><br>
+    <b>(25.11.26) 1.0Ver : 최초배포</b><br>
+    &nbsp; • 크롤링 오류로 제외 종목추가 : <br>
     </div>
     """, unsafe_allow_html=True)
 
@@ -390,3 +391,4 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
