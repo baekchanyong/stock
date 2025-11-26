@@ -225,12 +225,12 @@ def run_analysis_parallel(target_list, applied_rate, status_text, progress_bar, 
 st.markdown("<div class='responsive-header'>⚖️ KOSPI 분석기 1.0Ver</div>", unsafe_allow_html=True)
 
 # 1. 설명서
-with st.expander("📘 **공지사항**", expanded=True):
+with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
     st.markdown("""
     <div class='info-text'>
 
     <span class='pastel-blue'>공지사항</span><br>
-    <span class='pastel-red'># 적정주가: 절대적인 값보다, 상대적으로 봐야됨</span><br>
+    <span class='pastel-red'># 적정주가는 절대적인 값보다, 상대적으로 봐야됨</span><br>
     <span class='pastel-red'># 괴리율 높고,공포지수 낮을수록 매수대상으로 판단</span><br>
     <br><br>
 
@@ -256,8 +256,8 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     <div class='info-text'>
     
     <b>(25.11.26) 1.0Ver : 최초배포</b><br>
-    &nbsp; • 분석 제외종목 추가: 맥쿼리인프라, SK리츠, 제이알글로벌리츠, 롯데리츠, ESR켄달스퀘어리츠, 신한알파리츠, 맵스리얼티1, 이리츠코크렙, 코람코에너지리츠 <br>
-    &nbsp; • 사유 : 일반제조업과 성격이 달라서 적정주가 산출시 저평가로 산출됨
+    &nbsp; • 분석 필터링 추가: 맥쿼리인프라, SK리츠 등 제외<br>
+    &nbsp; • 로딩 속도 최적화 적용 (캐싱)<br>
     </div>
     """, unsafe_allow_html=True)
 
@@ -389,22 +389,33 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     top = df.iloc[0]
     st.info(f"🥇 **1위: {top['종목명']}** (시총 {top['시총순위']}위) | 괴리율: {top['괴리율']}%")
 
+    # [수정] 테이블 스타일: 셀 배경을 어두운 색(#222222)으로 고정하여 흰 글씨가 보이도록 함
     def style_dataframe(row):
         styles = []
         for col in row.index:
-            color = 'white'
+            text_color = 'white'
+            bg_color = '#222222' # 다크 그레이 배경
             weight = 'normal'
             
             if col == '괴리율':
                 val = row['괴리율']
-                if val > 20: color = '#D47C94'; weight = 'bold'
-                elif val < 0: color = '#ABC4FF'; weight = 'bold'
+                if val > 20: 
+                    text_color = '#D47C94' # 파스텔 레드
+                    weight = 'bold'
+                elif val < 0: 
+                    text_color = '#ABC4FF' # 파스텔 블루
+                    weight = 'bold'
             elif col == '공포지수':
                 val = row['공포지수']
-                if val <= 30: color = '#D47C94'; weight = 'bold'
-                elif val >= 70: color = '#ABC4FF'; weight = 'bold'
+                if val <= 30: 
+                    text_color = '#D47C94'
+                    weight = 'bold'
+                elif val >= 70: 
+                    text_color = '#ABC4FF'
+                    weight = 'bold'
             
-            styles.append(f'color: {color}; font-weight: {weight}')
+            # 배경색(background-color) 속성 추가
+            styles.append(f'color: {text_color}; background-color: {bg_color}; font-weight: {weight}')
         return styles
 
     st.dataframe(
@@ -414,4 +425,3 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
-
