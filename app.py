@@ -224,7 +224,7 @@ with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
     <span class='pastel-blue'>공지사항</span><br>
     <span class='pastel-red'># 적정주가는 절대적인 값보다, 상대적으로 봐야됨</span><br>
     <span class='pastel-red'># 괴리율 높고,공포지수 낮을수록 매수대상으로 판단</span><br>
-
+    <br><br>
     
     <b>1. 적정주가 (수익중심 모델)</b><br>
     &nbsp; • <b>수익가치(70%):</b> (EPS ÷ 한국은행 기준금리)<br>
@@ -391,5 +391,6 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
 
 
