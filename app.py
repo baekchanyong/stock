@@ -53,6 +53,13 @@ def to_float(val):
         return float(clean_val)
     except: return 0.0
 
+# --- [캐싱 적용] 종목 리스트 로딩 최적화 ---
+# 이 함수는 한 번 실행되면 결과를 메모리에 저장해두어 속도를 높입니다.
+@st.cache_data
+def get_stock_listing():
+    df = fdr.StockListing('KRX')
+    return df
+
 # --- [금리] 한국은행 기준금리 ---
 def get_bok_base_rate():
     url = "https://finance.naver.com/marketindex/"
@@ -209,6 +216,7 @@ def run_analysis_parallel(target_list, applied_rate, status_text, progress_bar, 
 
     progress_bar.empty()
     if results:
+        # st.session_state는 메모리에만 저장되며, 브라우저를 닫으면 사라집니다 (파일 생성 X)
         st.session_state['analysis_result'] = pd.DataFrame(results)
         return True
     return False
@@ -217,7 +225,7 @@ def run_analysis_parallel(target_list, applied_rate, status_text, progress_bar, 
 st.markdown("<div class='responsive-header'>⚖️ KOSPI 분석기 1.0Ver</div>", unsafe_allow_html=True)
 
 # 1. 설명서
-with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
+with st.expander("📘 **공지사항**", expanded=True):
     st.markdown("""
     <div class='info-text'>
 
@@ -248,7 +256,8 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     <div class='info-text'>
     
     <b>(25.11.26) 1.0Ver : 최초배포</b><br>
-    &nbsp; • 크롤링 오류로 제외 종목추가 : <br>
+    &nbsp; • 분석 제외종목 추가: 맥쿼리인프라, SK리츠, 제이알글로벌리츠, 롯데리츠, ESR켄달스퀘어리츠, 신한알파리츠, 맵스리얼티1, 이리츠코크렙, 코람코에너지리츠 <br>
+    &nbsp; (일반제조업과 성격이 달라서 적정주가 산출시 저평가로 산출됨)
     </div>
     """, unsafe_allow_html=True)
 
@@ -295,7 +304,8 @@ elif mode == "🔍 종목 검색":
     if query:
         try:
             with st.spinner("목록 검색 중..."):
-                df_krx = fdr.StockListing('KRX')
+                # [수정] 캐싱된 함수 사용
+                df_krx = get_stock_listing()
                 res = df_krx[df_krx['Name'].str.contains(query, case=False)]
                 if res.empty: st.error("결과 없음")
                 else:
@@ -311,14 +321,26 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     
     if mode == "🏆 시가총액 상위":
         with st.spinner("기초 데이터 준비 중..."):
-            df_krx = fdr.StockListing('KRX')
+            # [수정] 캐싱된 함수 사용
+            df_krx = get_stock_listing()
             if 'Marcap' in df_krx.columns:
                 df_krx = df_krx.sort_values(by='Marcap', ascending=False)
             
             top_n = df_krx.head(st.session_state.stock_count)
             target_list = []
+            
+            # [수정] 필터링 로직 (리츠/인프라 등 제외)
+            skipped_count = 0
             for i, (idx, row) in enumerate(top_n.iterrows()):
-                target_list.append((str(row['Code']), row['Name'], i+1))
+                name = row['Name']
+                # 제외할 종목 리스트: S-RIM/EPS 분석이 맞지 않는 부동산/인프라 펀드 성격의 종목들
+                if name in ["맥쿼리인프라", "SK리츠", "제이알글로벌리츠", "롯데리츠", "ESR켄달스퀘어리츠", "신한알파리츠", "맵스리얼티1", "이리츠코크렙", "코람코에너지리츠"]:
+                    skipped_count += 1
+                    continue
+                target_list.append((str(row['Code']), name, i+1))
+            
+            if skipped_count > 0:
+                st.toast(f"ℹ️ 리츠/인프라 종목 {skipped_count}개는 분석 특성상 자동 제외되었습니다.")
     
     if not target_list:
         st.warning("분석할 종목이 없습니다.")
@@ -334,7 +356,7 @@ if st.button("▶️ 분석 시작 (Start)", type="primary", use_container_width
     time.sleep(0.5)
     
     p_bar = st.progress(0)
-    # [수정] worker_count 파라미터 전달
+    # worker_count 파라미터 전달
     is_success = run_analysis_parallel(target_list, applied_rate, status_box, p_bar, worker_count)
     
     if is_success:
@@ -392,7 +414,3 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
-
-
-
-
