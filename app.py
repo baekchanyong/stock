@@ -225,12 +225,12 @@ def run_analysis_parallel(target_list, applied_rate, status_text, progress_bar, 
 st.markdown("<div class='responsive-header'>⚖️ KOSPI 분석기 1.0Ver</div>", unsafe_allow_html=True)
 
 # 1. 설명서
-with st.expander("📘 **공지사항 및 산출공식**", expanded=True):
+with st.expander("📘 **공지사항**", expanded=True):
     st.markdown("""
     <div class='info-text'>
 
     <span class='pastel-blue'>공지사항</span><br>
-    <span class='pastel-red'># 적정주가는 절대적인 값보다, 상대적으로 봐야됨</span><br>
+    <span class='pastel-red'># 적정주가 : 절대적인 값보다, 상대적으로 봐야됨</span><br>
     <span class='pastel-red'># 괴리율 높고,공포지수 낮을수록 매수대상으로 판단</span><br>
     <br><br>
 
@@ -256,8 +256,8 @@ with st.expander("🛠️ **패치노트**", expanded=False):
     <div class='info-text'>
     
     <b>(25.11.26) 1.0Ver : 최초배포</b><br>
-    &nbsp; • 분석 필터링 추가: 맥쿼리인프라, SK리츠 등 제외<br>
-    &nbsp; • 로딩 속도 최적화 적용 (캐싱)<br>
+    &nbsp; • 분석 제외종목 : 맥쿼리인프라, SK리츠, 제이알글로벌리츠, 롯데리츠, ESR켄달스퀘어리츠, 신한알파리츠, 맵스리얼티1, 이리츠코크렙, 코람코에너지리츠<br>
+    &nbsp;  - 일반제조업과 회계방식차이로 인하여 과도하게 저평가되는 종목들 제외<br>
     </div>
     """, unsafe_allow_html=True)
 
