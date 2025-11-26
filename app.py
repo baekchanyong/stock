@@ -8,6 +8,23 @@ import requests
 import re
 from datetime import datetime, timedelta
 
+import streamlit as st
+
+# === 비밀번호 설정 구간 시작 ===
+# 원하는 숫자로 바꾸기
+my_password = "1478"
+
+# 화면에 비밀번호 입력창을 만듭니다.
+password_input = st.text_input("비밀번번호를 입력하세요", type="password")
+
+# 비밀번호가 맞는지 확인합니다.
+if password_input != my_password:
+    st.error("비밀번번호ㅅ가 틀렸거나 입력되지 않았습니다.")
+    st.stop()  # 비밀번호가 틀리면 여기서 멈추고, 아래 코드를 보여주지 않습니다.
+# === 비밀번호 설정 구간 끝 ===
+st.write("🎉 Good Luck!")
+
+
 # --- 설정 ---
 # 메모리 저장 방식 사용 (DB_FILE 없음)
 
@@ -339,4 +356,5 @@ if 'analysis_result' in st.session_state and not st.session_state['analysis_resu
     )
 else:
     st.info("👈 위에서 [분석 시작] 버튼을 눌러주세요.")
+
 
