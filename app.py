@@ -6,11 +6,12 @@ import time
 from bs4 import BeautifulSoup
 
 # 페이지 기본 설정
-st.set_page_config(page_title="주식탐색기 Ver 1.0", page_icon="📈", layout="wide")
+st.set_page_config(page_title="주식탐색기 Ver 1.1", page_icon="📈", layout="wide")
 
 # --- 헤더 ---
-st.title("주식탐색기 Ver 1.0")
+st.title("주식탐색기 Ver 1.1")
 with st.expander("📝 패치노트 (클릭하여 열기)"):
+    st.write("(26.04.16) KOSDAQ 탐색 추가, 인터넷 닫혀도 Data일시저장기능 추가, 이어서 탐색 및 추가탐색 기능 추가")
     st.write("(26.04.15) 1.0Ver 최초 배포")
 
 # --- 계산식 안내 ---
@@ -18,7 +19,7 @@ st.markdown("### 🧮 산출 방식 안내")
 st.markdown("""
 - **적정주가**: `(연간 EPS * 10 or 15) + BPS - (부채 패널티)`
 - **목표주가**: `(연간 예상 EPS * 10 or 15) + BPS - (유동부채 / 주식수)`
-- **데이터 출처**: 연간 EPS(최신 실적/예상), 분기 EPS(최신 예상치)
+- **데이터 출처**: 연간 EPS(최신 실적/예상)
 - **정렬**: 괴리율(10) 낮은 순 (저평가 매력 순)
 """)
 
@@ -228,7 +229,7 @@ if not market_df.empty:
             st.markdown("### 🏆 탐색 결과")
             df = pd.DataFrame(st.session_state.results).sort_values("괴리율(10)", ascending=False).reset_index(drop=True)
             res = pd.DataFrame()
-            res["순위"] = df.index+1; res["시장"] = df.get("시장", "KOSPI"); res["시총순위"] = df["시총순위"]; res["종목"] = df["종목명"]; res["현재주가"] = df["현재주가"].apply(lambda x: f"{x:,.0f} 원")
+            res["시장"] = df.get("시장", "KOSPI"); res["순위"] = df.index+1; res["종목"] = df["종목명"]; res["시총순위"] = df["시총순위"]; res["현재주가"] = df["현재주가"].apply(lambda x: f"{x:,.0f} 원")
             res["적정주가(10)"] = df["적정주가(10)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(10)"] = df["목표주가(10)"].apply(lambda x: f"{x:,.0f} 원")
             res["괴리율(10)"] = df["괴리율(10)"].apply(lambda x: f"{x:.2f} %"); res["적정주가(15)"] = df["적정주가(15)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(15)"] = df["목표주가(15)"].apply(lambda x: f"{x:,.0f} 원")
             res["EPS"] = df["EPS"].apply(lambda x: f"{x:,.0f}"); res["BPS"] = df["BPS"].apply(lambda x: f"{x:,.0f}"); res["부채비율"] = df["부채비율(%)"].apply(lambda x: f"{x:.2f} %")
@@ -238,7 +239,7 @@ if not market_df.empty:
             with st.expander("🚫 분석 제외 종목", expanded=True):
                 dfS = pd.DataFrame(st.session_state.skipped_results).sort_values("시총순위")
                 skip = pd.DataFrame()
-                skip["시장"] = dfS.get("시장", "KOSPI"); skip["시총순위"] = dfS["시총순위"]; skip["종목"] = dfS["종목명"]; skip["사유"] = dfS.get("제외사유", "데이터 오류"); skip["현재주가"] = dfS["현재주가"].apply(lambda x: f"{float(x):,.0f} 원")
+                skip["시장"] = dfS.get("시장", "KOSPI"); skip["종목"] = dfS["종목명"]; skip["시총순위"] = dfS["시총순위"]; skip["사유"] = dfS.get("제외사유", "데이터 오류"); skip["현재주가"] = dfS["현재주가"].apply(lambda x: f"{float(x):,.0f} 원")
                 st.dataframe(skip, use_container_width=True, hide_index=True)
 
     if st.session_state.running:
