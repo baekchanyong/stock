@@ -17,7 +17,7 @@ with st.expander("📝 패치노트 (클릭하여 열기)"):
 st.markdown("### 🧮 산출 방식 안내")
 st.markdown("""
 - **적정주가**: `(연간 EPS * 10 or 15) + BPS - (부채 패널티)`
-- **목표주가**: `(분기 예상 EPS * 10 or 15) + BPS - (유동부채 / 주식수)`
+- **목표주가**: `(연간 예상 EPS * 10 or 15) + BPS - (유동부채 / 주식수)`
 - **데이터 출처**: 연간 EPS(최신 실적/예상), 분기 EPS(최신 예상치)
 - **정렬**: 괴리율(10) 낮은 순 (저평가 매력 순)
 """)
@@ -123,8 +123,8 @@ def analyze_stock(ticker, name, current_price, shares, marcap_rank):
     pnlty = ((t_debt - t_equity) / shares) if d_ratio > 100 else 0
     p10 = (a_eps * 10) + bps - pnlty
     p15 = (a_eps * 15) + bps - pnlty
-    t10 = (q_eps * 10) + bps - (c_liab / shares)
-    t15 = (q_eps * 15) + bps - (c_liab / shares)
+    t10 = (a_eps * 10) + bps - (c_liab / shares)
+    t15 = (a_eps * 15) + bps - (c_liab / shares)
     
     reason = None
     if a_eps <= 0: reason = "적자 기업"
@@ -153,9 +153,9 @@ if not kospi_df.empty:
             selected_custom = st.multiselect("종목 선택:", kospi_df['Name'].tolist())
 
     st.divider()
-    btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+    btn_col1, btn_col2, btn_col3, _ = st.columns([1, 1.2, 1, 1.8])
     with btn_col1:
-        if st.button("🚀 탐색 시작", disabled=st.session_state.running):
+        if st.button("🚀 새로 탐색", disabled=st.session_state.running):
             if search_mode == "KOSPI 전체 탐색": st.session_state.target_stocks = kospi_df.to_dict('records')
             elif search_mode == "KOSPI 상위 N개 탐색": st.session_state.target_stocks = kospi_df.head(top_n).to_dict('records')
             else: st.session_state.target_stocks = kospi_df[kospi_df['Name'].isin(selected_custom)].to_dict('records')
@@ -163,7 +163,21 @@ if not kospi_df.empty:
             if len(st.session_state.target_stocks) > 0: st.session_state.running = True
             st.rerun()
     with btn_col2:
-        if st.button("⏹️ 중지", disabled=not st.session_state.running):
+        if st.button("▶️ 이어서/추가 탐색", disabled=st.session_state.running):
+            if search_mode == "KOSPI 전체 탐색": new_targets = kospi_df.to_dict('records')
+            elif search_mode == "KOSPI 상위 N개 탐색": new_targets = kospi_df.head(top_n).to_dict('records')
+            else: new_targets = kospi_df[kospi_df['Name'].isin(selected_custom)].to_dict('records')
+            
+            existing_codes = set([s['Code'] for s in st.session_state.target_stocks])
+            for stock in new_targets:
+                if stock['Code'] not in existing_codes:
+                    st.session_state.target_stocks.append(stock)
+            
+            if st.session_state.current_idx < len(st.session_state.target_stocks):
+                st.session_state.running = True
+            st.rerun()
+    with btn_col3:
+        if st.button("⏹️ 일시정지", disabled=not st.session_state.running):
             st.session_state.running = False; st.rerun()
 
     progress_container = st.empty(); status_text = st.empty()
@@ -172,20 +186,20 @@ if not kospi_df.empty:
         def fmt_curr(v): return f"{v/1e8:,.1f} 억원" if v >= 1e8 else "1억 미만"
         if len(st.session_state.results) > 0:
             st.markdown("### 🏆 탐색 결과")
-            df = pd.DataFrame(st.session_state.results).sort_values("괴리율(10)").reset_index(drop=True)
+            df = pd.DataFrame(st.session_state.results).sort_values("괴리율(10)", ascending=False).reset_index(drop=True)
             res = pd.DataFrame()
             res["순위"] = df.index+1; res["시총순위"] = df["시총순위"]; res["종목"] = df["종목명"]; res["현재주가"] = df["현재주가"].apply(lambda x: f"{x:,.0f} 원")
             res["적정주가(10)"] = df["적정주가(10)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(10)"] = df["목표주가(10)"].apply(lambda x: f"{x:,.0f} 원")
             res["괴리율(10)"] = df["괴리율(10)"].apply(lambda x: f"{x:.2f} %"); res["적정주가(15)"] = df["적정주가(15)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(15)"] = df["목표주가(15)"].apply(lambda x: f"{x:,.0f} 원")
             res["EPS"] = df["EPS"].apply(lambda x: f"{x:,.0f}"); res["BPS"] = df["BPS"].apply(lambda x: f"{x:,.0f}"); res["부채비율"] = df["부채비율(%)"].apply(lambda x: f"{x:.2f} %")
             res["총부채"] = df["총부채_원"].apply(fmt_curr); res["유동부채"] = df["유동부채_원"].apply(fmt_curr); res["총자본"] = df["총자본_원"].apply(fmt_curr); res["주식수"] = df["상장주식수_원"].apply(lambda x: f"{x/1e4:,.0f} 만개")
-            st.dataframe(res, use_container_width=True)
+            st.dataframe(res, use_container_width=True, hide_index=True)
         if len(st.session_state.skipped_results) > 0:
             with st.expander("🚫 분석 제외 종목", expanded=True):
                 dfS = pd.DataFrame(st.session_state.skipped_results).sort_values("시총순위")
                 skip = pd.DataFrame()
                 skip["시총순위"] = dfS["시총순위"]; skip["종목"] = dfS["종목명"]; skip["사유"] = dfS.get("제외사유", "데이터 오류"); skip["현재주가"] = dfS["현재주가"].apply(lambda x: f"{float(x):,.0f} 원")
-                st.dataframe(skip, use_container_width=True)
+                st.dataframe(skip, use_container_width=True, hide_index=True)
 
     if st.session_state.running:
         total = len(st.session_state.target_stocks)
