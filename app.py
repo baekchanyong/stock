@@ -96,7 +96,11 @@ if st.session_state.market_df.empty:
             else:
                 eta = 0
                 
-            loading_placeholder.markdown(f"### ⏳ Data Loading 중... (예상 남은 시간: {max(0, int(eta))}초)")
+            eta_val = max(0, int(eta))
+            if eta_val > 0:
+                loading_placeholder.markdown(f"### ⏳ Data Loading 중... (예상 남은 시간: {eta_val}초)")
+            else:
+                loading_placeholder.markdown("### ⏳ Data 최종 정리중...")
             progress_bar.progress(percent)
             
             page_data, has_data = fetch_page_data(sosok, page)
@@ -234,22 +238,22 @@ if not market_df.empty:
     progress_container = st.empty(); status_text = st.empty()
 
     def render_result_table():
-        def fmt_curr(v): return f"{v/1e8:,.1f} 억원" if v >= 1e8 else "1억 미만"
+        def fmt_curr(v): return f"{v/1e8:,.1f}"
         if len(st.session_state.results) > 0:
             st.markdown("### 🏆 탐색 결과")
             df = pd.DataFrame(st.session_state.results).sort_values("괴리율(10)", ascending=False).reset_index(drop=True)
             res = pd.DataFrame()
-            res["시장"] = df.get("시장", "KOSPI"); res["순위"] = df.index+1; res["종목"] = df["종목명"]; res["시총순위"] = df["시총순위"]; res["현재주가"] = df["현재주가"].apply(lambda x: f"{x:,.0f} 원")
-            res["적정주가(10)"] = df["적정주가(10)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(10)"] = df["목표주가(10)"].apply(lambda x: f"{x:,.0f} 원")
-            res["괴리율(10)"] = df["괴리율(10)"].apply(lambda x: f"{x:.2f} %"); res["적정주가(15)"] = df["적정주가(15)"].apply(lambda x: f"{x:,.0f} 원"); res["목표주가(15)"] = df["목표주가(15)"].apply(lambda x: f"{x:,.0f} 원")
-            res["EPS"] = df["EPS"].apply(lambda x: f"{x:,.0f}"); res["BPS"] = df["BPS"].apply(lambda x: f"{x:,.0f}"); res["부채비율"] = df["부채비율(%)"].apply(lambda x: f"{x:.2f} %")
-            res["총부채"] = df["총부채_원"].apply(fmt_curr); res["유동부채"] = df["유동부채_원"].apply(fmt_curr); res["총자본"] = df["총자본_원"].apply(fmt_curr); res["주식수"] = df["상장주식수_원"].apply(lambda x: f"{x/1e4:,.0f} 만개")
+            res["시장"] = df.get("시장", "KOSPI"); res["순위"] = df.index+1; res["종목"] = df["종목명"]; res["시총순위"] = df["시총순위"]; res["현재주가(원)"] = df["현재주가"].apply(lambda x: f"{x:,.0f}")
+            res["적정주가(10, 원)"] = df["적정주가(10)"].apply(lambda x: f"{x:,.0f}"); res["목표주가(10, 원)"] = df["목표주가(10)"].apply(lambda x: f"{x:,.0f}")
+            res["괴리율(10, %)"] = df["괴리율(10)"].apply(lambda x: f"{x:.2f}"); res["적정주가(15, 원)"] = df["적정주가(15)"].apply(lambda x: f"{x:,.0f}"); res["목표주가(15, 원)"] = df["목표주가(15)"].apply(lambda x: f"{x:,.0f}")
+            res["EPS(원)"] = df["EPS"].apply(lambda x: f"{x:,.0f}"); res["BPS(원)"] = df["BPS"].apply(lambda x: f"{x:,.0f}"); res["부채비율(%)"] = df["부채비율(%)"].apply(lambda x: f"{x:.2f}")
+            res["총부채(억원)"] = df["총부채_원"].apply(fmt_curr); res["유동부채(억원)"] = df["유동부채_원"].apply(fmt_curr); res["총자본(억원)"] = df["총자본_원"].apply(fmt_curr); res["주식수(만개)"] = df["상장주식수_원"].apply(lambda x: f"{x/1e4:,.0f}")
             st.dataframe(res, use_container_width=True, hide_index=True)
         if len(st.session_state.skipped_results) > 0:
             with st.expander("🚫 분석 제외 종목", expanded=True):
                 dfS = pd.DataFrame(st.session_state.skipped_results).sort_values("시총순위")
                 skip = pd.DataFrame()
-                skip["시장"] = dfS.get("시장", "KOSPI"); skip["종목"] = dfS["종목명"]; skip["시총순위"] = dfS["시총순위"]; skip["사유"] = dfS.get("제외사유", "데이터 오류"); skip["현재주가"] = dfS["현재주가"].apply(lambda x: f"{float(x):,.0f} 원")
+                skip["시장"] = dfS.get("시장", "KOSPI"); skip["종목"] = dfS["종목명"]; skip["시총순위"] = dfS["시총순위"]; skip["사유"] = dfS.get("제외사유", "데이터 오류"); skip["현재주가(원)"] = dfS["현재주가"].apply(lambda x: f"{float(x):,.0f}")
                 st.dataframe(skip, use_container_width=True, hide_index=True)
 
     if st.session_state.running:
