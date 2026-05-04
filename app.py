@@ -374,9 +374,15 @@ if not market_df.empty:
 
     if st.session_state.running:
         total = len(st.session_state.target_stocks)
-        prog = progress_container.progress(0.0)
-        for i, stock in enumerate(st.session_state.target_stocks[st.session_state.current_idx:], start=st.session_state.current_idx):
-            prog.progress((i)/total); status_text.markdown(f"**진행중:** {i}/{total} ({stock['Name']})")
+        prog = progress_container.progress(st.session_state.current_idx / total if total > 0 else 0)
+        
+        BATCH_SIZE = 10
+        start_idx = st.session_state.current_idx
+        end_idx = min(start_idx + BATCH_SIZE, total)
+        
+        for i in range(start_idx, end_idx):
+            stock = st.session_state.target_stocks[i]
+            prog.progress((i + 1) / total); status_text.markdown(f"**진행중:** {i + 1}/{total} ({stock['Name']})")
             filters = {
                 'pref': st.session_state.get('filter_pref', True),
                 'target_neg': st.session_state.get('filter_target_neg', True),
@@ -389,6 +395,16 @@ if not market_df.empty:
             res, extra = analyze_stock(stock['Code'], stock['Name'], stock.get('Market', 'KOSPI'), float(stock['Close']), float(stock['Stocks']), stock['Marcap_Rank'], filters)
             if res: st.session_state.results.append(res)
             else: st.session_state.skipped_results.append(extra)
-            render_result_table(); st.session_state.current_idx = i + 1; time.sleep(0.3)
-        st.session_state.running = False; progress_container.empty(); status_text.success("완료!"); st.rerun()
-    else: render_result_table()
+            st.session_state.current_idx = i + 1; time.sleep(0.3)
+            
+        render_result_table()
+        
+        if st.session_state.current_idx < total:
+            st.rerun()
+        else:
+            st.session_state.running = False
+            progress_container.empty()
+            status_text.success("완료!")
+            st.rerun()
+    else: 
+        render_result_table()
